@@ -19,6 +19,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 
 DEFAULT_MODEL = "sonnet"   # cheap/fast is plenty for compile/reconcile synthesis
 
@@ -31,11 +32,46 @@ class LLMError(RuntimeError):
     pass
 
 
+def parse_stream_json(stdout: str):
+    """Parse `claude -p --output-format stream-json` JSONL output.
+
+    The stream is one JSON object per line; the terminal object has
+    type=="result" with the final text in `result`. Returns (text, result_obj);
+    text is None if no result event was seen. Tolerant of non-JSON noise lines.
+    """
+    text, result_obj = None, {}
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and obj.get("type") == "result":
+            text = obj.get("result", text)
+            result_obj = obj
+    return text, result_obj
+
+
+def _fallback_parse(stdout: str) -> str:
+    """If the stream had no result event, accept a single JSON object or raw text."""
+    out = stdout.strip()
+    try:
+        data = json.loads(out)
+        if isinstance(data, dict):
+            return data.get("result", out)
+    except ValueError:
+        pass
+    return out
+
+
 def run_claude(prompt: str, model: str = DEFAULT_MODEL, timeout: int = 240) -> str:
     """Run `claude -p` headless and return the assistant's text result.
 
-    Uses --output-format json so we get a clean `result` field instead of
-    having to scrape stdout. Raises LLMError on any failure.
+    Uses --output-format stream-json (richer than plain json: surfaces per-turn
+    progress and final cost/usage, which we log to stderr). Raises LLMError on
+    any failure.
     """
     if not claude_available():
         raise LLMError("`claude` CLI not found on PATH. Install Claude Code, or "
@@ -45,7 +81,7 @@ def run_claude(prompt: str, model: str = DEFAULT_MODEL, timeout: int = 240) -> s
             "you're inside a Claude Code session — `claude -p` can't nest. "
             "Either run this from a normal terminal, or use the in-session path: "
             "the /mem:ingest plugin command (Claude does the synthesis directly).")
-    cmd = ["claude", "-p", prompt, "--output-format", "json"]
+    cmd = ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose"]
     if model:
         cmd += ["--model", model]
     try:
@@ -55,14 +91,19 @@ def run_claude(prompt: str, model: str = DEFAULT_MODEL, timeout: int = 240) -> s
     if proc.returncode != 0:
         raise LLMError("claude -p failed (exit %d): %s"
                        % (proc.returncode, (proc.stderr or proc.stdout)[:500]))
-    out = proc.stdout.strip()
-    # --output-format json wraps the answer; fall back to raw stdout if needed.
-    try:
-        data = json.loads(out)
-        result = data.get("result", data) if isinstance(data, dict) else out
-        return result if isinstance(result, str) else json.dumps(result)
-    except (ValueError, TypeError):
-        return out
+
+    text, result = parse_stream_json(proc.stdout)
+    if text is None:
+        text = _fallback_parse(proc.stdout)
+    # Richer feedback: surface cost/usage if the result event carried it.
+    cost = result.get("total_cost_usd")
+    usage = result.get("usage") or {}
+    if cost is not None or usage:
+        toks = (usage.get("input_tokens", 0) + usage.get("output_tokens", 0)) if usage else 0
+        print("[mem] llm: %s%s" % (
+            ("~%d tokens" % toks) if toks else "",
+            (" $%.4f" % cost) if cost is not None else ""), file=sys.stderr)
+    return text if isinstance(text, str) else json.dumps(text)
 
 
 def strip_code_fence(text: str) -> str:

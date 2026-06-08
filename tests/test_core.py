@@ -414,6 +414,26 @@ class TestLLM(unittest.TestCase):
         with self.assertRaises(llm.LLMError):
             llm.extract_json("no json at all")
 
+    def test_parse_stream_json(self):
+        from memlib import llm
+        stream = "\n".join([
+            '{"type":"system","subtype":"init"}',
+            '{"type":"assistant","message":{"content":"thinking"}}',
+            'not json — ignored',
+            '{"type":"result","subtype":"success","result":"final answer",'
+            '"total_cost_usd":0.01,"usage":{"input_tokens":10,"output_tokens":5}}',
+        ])
+        text, obj = llm.parse_stream_json(stream)
+        self.assertEqual(text, "final answer")
+        self.assertEqual(obj["total_cost_usd"], 0.01)
+
+    def test_parse_stream_json_no_result(self):
+        from memlib import llm
+        text, obj = llm.parse_stream_json('{"type":"system"}\n')
+        self.assertIsNone(text)
+        self.assertEqual(llm._fallback_parse('{"result":"x"}'), "x")
+        self.assertEqual(llm._fallback_parse("plain text"), "plain text")
+
     def test_run_claude_missing_binary(self):
         from memlib import llm
         orig = llm.claude_available
