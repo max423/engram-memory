@@ -635,6 +635,75 @@ def cmd_ingest(args) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# review — async review queue: items needing human judgment (derived from state)
+# --------------------------------------------------------------------------- #
+def _review_query(title: str) -> str:
+    from memlib.pages import tokenize
+    terms = " ".join(tokenize(title)[:4]) or title
+    return 'mem search "%s" --top 5' % terms
+
+
+def build_review_items(mem: MemoryPaths) -> list:
+    """Derive open review items from the current memory state. Zero tokens.
+
+    No separate queue file: the page status machine + lint ARE the queue, so an
+    item disappears the moment it's actually resolved (single source of truth).
+    """
+    pages = [p for p in collect_pages(mem.wiki) if "read_error" not in p]
+    items = []
+    for p in pages:
+        st = p.get("status")
+        if st == "contradicted":
+            items.append({"kind": "contradicted", "slug": p["slug"], "where": p["rel_path"],
+                          "why": "a source conflicts with this page",
+                          "action": "re-read the source, then reconcile or archive",
+                          "do": "mem reconcile --apply", "query": _review_query(p["title"])})
+        elif st == "stale":
+            items.append({"kind": "stale", "slug": p["slug"], "where": p["rel_path"],
+                          "why": "its source changed after the page was written",
+                          "action": "re-ingest the changed source",
+                          "do": "mem ingest --backend llm", "query": _review_query(p["title"])})
+    findings = run_lint(mem, 400, 800)
+    for f in findings["missing_sources"]:
+        items.append({"kind": "missing-source", "slug": Path(f["path"]).stem,
+                      "where": f["path"], "why": "no sources: (anti-drift)",
+                      "action": "add a sources: line citing the raw/ file", "do": None,
+                      "query": None})
+    for f in findings["dangling_sources"]:
+        items.append({"kind": "dangling-source", "slug": Path(f["path"]).stem,
+                      "where": f["path"], "why": "cites a source that doesn't exist: %s" % f["source"],
+                      "action": "fix the source path or restore the file", "do": None,
+                      "query": None})
+    return items
+
+
+def cmd_review(args) -> int:
+    mem = resolve(args.memory)
+    if not mem.exists():
+        print("No wiki found at %s." % mem.wiki, file=sys.stderr)
+        return 1
+    items = build_review_items(mem)
+    if args.json:
+        print(json.dumps(items, indent=2))
+        return 1 if (args.strict and items) else 0
+    if not items:
+        print("Review queue empty — nothing needs human judgment.")
+        return 0
+    print("Review queue: %d item(s) need human judgment\n" % len(items))
+    order = {"contradicted": 0, "dangling-source": 1, "missing-source": 2, "stale": 3}
+    for it in sorted(items, key=lambda x: order.get(x["kind"], 9)):
+        print("[%s] %s  (%s)" % (it["kind"].upper(), it["slug"], it["where"]))
+        print("    why:    %s" % it["why"])
+        print("    action: %s" % it["action"])
+        if it.get("do"):
+            print("    run:    %s" % it["do"])
+        if it.get("query"):
+            print("    find:   %s" % it["query"])
+        print()
+    return 1 if args.strict else 0
+
+
+# --------------------------------------------------------------------------- #
 # add-synthesis — file a worthy answer back into the memory as a synthesis page
 # --------------------------------------------------------------------------- #
 def cmd_add_synthesis(args) -> int:
@@ -848,6 +917,12 @@ def main() -> int:
     p.add_argument("repo", nargs="?", default=".", help="Repo root (default: .).")
     p.add_argument("--force", action="store_true")
     p.set_defaults(func=cmd_install_hooks)
+
+    p = sub.add_parser("review", help="List memory items needing human judgment.")
+    add_memory(p)
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--strict", action="store_true", help="Exit non-zero if any item is open.")
+    p.set_defaults(func=cmd_review)
 
     p = sub.add_parser("add-synthesis", help="File a worthy answer as a synthesis page.")
     add_memory(p)

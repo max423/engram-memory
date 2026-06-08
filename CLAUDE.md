@@ -82,6 +82,16 @@ Miglioramenti landati (vedi `WEAKNESSES.md`):
   testato end-to-end con un merge vero (backend offline). `mem install-hooks` incide il
   path assoluto della CLI (funziona in qualsiasi repo, senza `core/`).
 
+Idee adottate da `nashsu/llm_wiki` (studiata, GPL — reimplementate, non copiate):
+- **Ranking a 4 segnali** `core/memlib/ranking.py`: + source-overlap + Adamic-Adar
+  in `select_candidates` (score additivi).
+- **`stream-json`** in `llm.run_claude`: progress + costo/usage a stderr.
+- **`mem review`**: coda di revisione derivata dallo stato (contradicted/stale +
+  anti-drift), con azione + comando + query pronti.
+- **Scenario templates** `mem init --template software|research|product`.
+- **`mem add-synthesis`**: le risposte degne tornano come pagine `synthesis/`,
+  ancorate all'unione delle fonti delle pagine citate.
+
 Ancora aperto: provare un reconcile LLM reale via `claude -p` da terminale (non
 annidabile in sessione); backend offline = estrattivo per scelta.
 

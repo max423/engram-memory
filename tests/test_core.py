@@ -569,6 +569,35 @@ class TestCliEndToEnd(unittest.TestCase):
             self.assertIn("research", schema.lower())
             self.assertIn("paper", schema.lower())   # research-specific entity
 
+    def test_review_surfaces_items(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._run("init", ".", cwd=d)
+            wiki = Path(d) / ".memory" / "wiki" / "decisions"
+            # a contradicted page (cites a real source) + a page missing sources
+            (Path(d) / ".memory" / "raw" / "s.md").write_text("x")
+            (wiki / "c.md").write_text(
+                "---\nid: c\ntype: decision\nstatus: contradicted\ntitle: Cache scelta\n"
+                "tags: [cache]\nsources:\n  - raw/s.md\ncreated: 2026-01-01\n"
+                "updated: 2026-01-01\n---\n# Cache\nbody\n")
+            (wiki / "b.md").write_text(
+                "---\nid: b\ntype: decision\nstatus: active\ntitle: Bad\n"
+                "tags: [x]\ncreated: 2026-01-01\nupdated: 2026-01-01\n---\n# Bad\nbody\n")
+            r = self._run("review", "--memory", ".memory", "--json", cwd=d)
+            items = json.loads(r.stdout)
+            kinds = {i["kind"] for i in items}
+            self.assertIn("contradicted", kinds)
+            self.assertIn("missing-source", kinds)
+            contradicted = next(i for i in items if i["kind"] == "contradicted")
+            self.assertEqual(contradicted["slug"], "c")
+            self.assertTrue(contradicted["do"])     # has a suggested command
+            self.assertTrue(contradicted["query"])  # has a pre-generated search
+
+    def test_review_empty_on_healthy(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._run("init", ".", cwd=d)
+            r = self._run("review", "--memory", ".memory", cwd=d)
+            self.assertIn("empty", r.stdout.lower())
+
     def test_add_synthesis_grounds_in_linked_sources(self):
         with tempfile.TemporaryDirectory() as d:
             self._run("init", ".", cwd=d)
