@@ -7,6 +7,9 @@ Run:  python3 -m unittest discover -s tests
 
 from __future__ import annotations
 
+import argparse
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -19,6 +22,7 @@ CORE = Path(__file__).resolve().parent.parent / "core"
 sys.path.insert(0, str(CORE))
 
 import change_detect  # noqa: E402
+import mem as mem_cli  # noqa: E402
 import reconcile  # noqa: E402
 from memlib import bm25, compile as compile_mod, frontmatter, graph, pages  # noqa: E402
 from memlib.store import MemoryPaths  # noqa: E402
@@ -333,6 +337,50 @@ class TestLLM(unittest.TestCase):
         finally:
             llm.run_claude = orig
         self.assertEqual(decisions, [{"slug": "p", "action": "no-op"}])
+
+
+class TestIndexCache(unittest.TestCase):
+    def _build(self, d):
+        mem = MemoryPaths(Path(d) / ".memory")
+        (mem.wiki / "decisions").mkdir(parents=True)
+        mem.raw.mkdir(parents=True)
+        mem.index_dir.mkdir(parents=True)
+        mem.log.write_text("# log\n")
+        (mem.root / "raw" / "s1.md").write_text("Scelta: uno.\n")
+        (mem.root / "raw" / "s2.md").write_text("Scelta: due.\n")
+        (mem.wiki / "decisions" / "a.md").write_text(
+            make_page({"id": "a", "sources": ["raw/s1.md"]}, "# A\n\nstorage git [[b]]\n"))
+        (mem.wiki / "decisions" / "b.md").write_text(
+            make_page({"id": "b", "sources": ["raw/s2.md"]}, "# B\n\nsearch bm25 [[a]]\n"))
+        return mem
+
+    def _index(self, mem):
+        with contextlib.redirect_stdout(io.StringIO()):
+            mem_cli.cmd_index(argparse.Namespace(memory=mem.root))
+
+    def test_validity_and_invalidation(self):
+        from memlib import index_store
+        with tempfile.TemporaryDirectory() as d:
+            mem = self._build(d)
+            self.assertIsNone(index_store.load_valid(mem))     # no manifest yet
+            self._index(mem)
+            self.assertIsNotNone(index_store.load_valid(mem))  # fresh -> valid
+            page = mem.wiki / "decisions" / "a.md"
+            page.write_text(page.read_text() + "\nextra line\n")
+            self.assertIsNone(index_store.load_valid(mem))      # wiki changed -> invalid
+
+    def test_compute_plan_cache_equals_live(self):
+        with tempfile.TemporaryDirectory() as d:
+            mem = self._build(d)
+            self._index(mem)
+            snap = change_detect.current_source_hashes(mem.raw)
+            mem.sources_sha.write_text(json.dumps(snap))
+            # mutate a SOURCE only (wiki unchanged -> cache stays valid)
+            (mem.root / "raw" / "s1.md").write_text("Scelta: uno modificato.\n")
+            cached = change_detect.compute_plan(mem, None, 8, use_cache=True)
+            live = change_detect.compute_plan(mem, None, 8, use_cache=False)
+            self.assertEqual(cached, live)
+            self.assertEqual(cached["items"][0]["source"], "raw/s1.md")
 
 
 class TestCliEndToEnd(unittest.TestCase):

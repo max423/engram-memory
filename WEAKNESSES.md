@@ -74,16 +74,20 @@ for real terminals/hooks. `run_claude` detects this and says so.
   pipeline runnable with nothing installed; its output is a draft to refine.
 
 ### Medium — search quality and index freshness
-- **`detect` and `search` rebuild BM25 every run** instead of loading the
-  persisted `index/bm25.idx`. This is a deliberate correctness choice (a stale
-  persisted index would miss new/edited pages), but it's why `detect` is O(wiki).
-  The right fix is an incremental/validated persisted index (rebuild only changed
-  docs); the artifact format already supports it.
-- **BM25 is purely lexical: no stemming, no stopwords, mixed IT/EN.**
-  `decisione`/`decisioni`, `merge`/`merging` are different terms; recall can miss
-  a relevant page whose wording differs from the source. Tags + title are folded
-  into the document tokens to soften this. The documented upgrade is hybrid
-  BM25+vector with re-rank, deferred until scale demands it.
+- **Validated persisted index is in, but loading it is still O(wiki).**
+  `detect`/`search` now load `index/` when a cheap manifest (one stat() per page,
+  no content read) still matches the wiki, and rebuild live otherwise — verified
+  cached≡live. Two regimes: when *no source changed* (the common merge), detect
+  returns after hashing `raw/` without touching the wiki (truly O(change)); when a
+  source changed but pages didn't, the cache avoids re-tokenizing the wiki (~2×
+  at 2000 pages) but still parses the full term table. A postings-list index
+  (term → [(doc, tf)]) would make BM25 load sub-linear; deferred.
+- **BM25 is purely lexical, but normalized.** `tokenize` now drops IT/EN
+  stopwords and applies a light symmetric stemmer (`fonti→fonte`,
+  `decisioni→decisione`, `files→file`) — measured to lift sample recall@1 from
+  0.90 to 1.00. It is still lexical: a page worded very differently from the query
+  can be missed. The documented upgrade is hybrid BM25+vector with re-rank,
+  deferred until scale demands it.
 
 ### Medium — git lifecycle edges
 - **`index.md` is the merge-conflict soft spot.** `log.md` is strictly
@@ -114,9 +118,9 @@ for real terminals/hooks. `run_claude` detects this and says so.
 1. Harden the reconcile patch loop: anchor `str_replace` targets, retry on a
    missing/ambiguous match, and exercise it on real changed sources from a normal
    terminal (the live `claude -p` path).
-2. Make `detect`/`search` load a *validated* persisted index (rebuild only the
-   docs whose mtime/SHA changed) → `detect` drops from O(wiki) to O(change).
-3. Light normalization in `tokenize` (lowercasing is done; add a small IT/EN
-   stopword list + optional stemming) before reaching for vectors.
+2. Go from the validated-load cache (done, ~2×) to a postings-list BM25 so a
+   query loads only the relevant term lists → sub-linear `search`/`detect`.
+3. ~~Light normalization in `tokenize`~~ (done: stopwords + light stemmer,
+   recall@1 0.90→1.00). Next: hybrid BM25+vector re-rank when scale demands it.
 4. A `mem merge` helper for the residual `index.md` conflict case (reuse the
    reconcile prompt on the two sides).

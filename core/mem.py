@@ -186,6 +186,9 @@ def cmd_index(args) -> int:
     graph = build_graph(pages)
     mem.graph_json.write_text(json.dumps(graph, indent=2), encoding="utf-8")
 
+    from memlib import index_store
+    index_store.save_manifest(mem)
+
     print("Indexed %d pages -> %s" % (len(real), mem.index_dir))
     print("  index.json  (%d records)" % len(records))
     print("  bm25.idx    (%d terms)" % len(BM25.build(real).df))
@@ -213,8 +216,59 @@ def _passes_filters(p: dict, args) -> bool:
     return True
 
 
+def _emit_hits(query, hits, by_slug) -> None:
+    print("Top %d results for: %r\n" % (len(hits), query))
+    for slug, score in hits:
+        p = by_slug.get(slug)
+        if not p:
+            continue
+        print("  [%6.2f] [%-9s] %s" % (score, p.get("type", "?"), p.get("title", slug)))
+        print("           %s" % p.get("rel_path", ""))
+
+
+def _emit_backlinks(target, items) -> None:
+    print("Pages linking to [[%s]] (%d):" % (target, len(items)))
+    for p in items:
+        print("  - %s  (%s)" % (p.get("title", p["slug"]), p.get("rel_path", "")))
+
+
+def _emit_hubs(hubs) -> None:
+    print("Top %d most-linked-to pages (hubs):" % len(hubs))
+    for slug, srcs in hubs:
+        print("  %4d  %s" % (len(srcs), slug))
+
+
 def cmd_search(args) -> int:
     mem = resolve(args.memory)
+    has_filters = bool(args.type or args.status or args.tag or args.since)
+
+    # Fast path: validated persisted index, when no filters are in play.
+    if not getattr(args, "no_cache", False) and not has_filters:
+        from memlib import index_store
+        cache = index_store.load_valid(mem)
+        if cache is not None:
+            records = cache["records"]
+            by_slug = {r["slug"]: r for r in records}
+            if args.backlinks:
+                inbound = [r for r in records if args.backlinks in r.get("links", [])]
+                (_emit_backlinks(args.backlinks, inbound) if inbound
+                 else print("No pages link to [[%s]]." % args.backlinks))
+                return 0
+            if args.top_linked:
+                hubs = sorted(cache["graph"]["backlinks"].items(),
+                              key=lambda kv: -len(kv[1]))[:args.top_linked]
+                _emit_hubs(hubs) if hubs else print("No links found in the wiki.")
+                return 0
+            if not args.query:
+                print("Empty query. Provide terms, or --backlinks / --top-linked.",
+                      file=sys.stderr)
+                return 1
+            hits = cache["bm25"].search(args.query, top=args.top)
+            _emit_hits(args.query, hits, by_slug) if hits \
+                else print("No matches for %r." % args.query)
+            return 0
+
+    # Live path: filters present, or no valid cache.
     pages = collect_pages(mem.wiki)
     real = [p for p in pages if "read_error" not in p]
     if not real:
@@ -223,23 +277,14 @@ def cmd_search(args) -> int:
 
     if args.backlinks:
         inbound = [p for p in real if args.backlinks in p["links"]]
-        if not inbound:
-            print("No pages link to [[%s]]." % args.backlinks)
-            return 0
-        print("Pages linking to [[%s]] (%d):" % (args.backlinks, len(inbound)))
-        for p in inbound:
-            print("  - %s  (%s)" % (p["title"], p["rel_path"]))
+        (_emit_backlinks(args.backlinks, inbound) if inbound
+         else print("No pages link to [[%s]]." % args.backlinks))
         return 0
 
     if args.top_linked:
         graph = build_graph(pages)
         hubs = sorted(graph["backlinks"].items(), key=lambda kv: -len(kv[1]))[:args.top_linked]
-        if not hubs:
-            print("No links found in the wiki.")
-            return 0
-        print("Top %d most-linked-to pages (hubs):" % len(hubs))
-        for slug, srcs in hubs:
-            print("  %4d  %s" % (len(srcs), slug))
+        _emit_hubs(hubs) if hubs else print("No links found in the wiki.")
         return 0
 
     filtered = [p for p in real if _passes_filters(p, args)]
@@ -255,12 +300,7 @@ def cmd_search(args) -> int:
     if not hits:
         print("No matches for %r." % args.query)
         return 0
-    by_slug = {p["slug"]: p for p in filtered}
-    print("Top %d results for: %r\n" % (len(hits), args.query))
-    for slug, score in hits:
-        p = by_slug[slug]
-        print("  [%6.2f] [%-9s] %s" % (score, p.get("type", "?"), p["title"]))
-        print("           %s" % p["rel_path"])
+    _emit_hits(args.query, hits, {p["slug"]: p for p in filtered})
     return 0
 
 
@@ -420,7 +460,8 @@ def cmd_detect(args) -> int:
         mem.sources_sha.write_text(json.dumps(current, indent=2), encoding="utf-8")
         print("Snapshot updated: %d sources -> %s" % (len(current), mem.sources_sha))
         return 0
-    plan = change_detect.compute_plan(mem, args.since, args.max_candidates)
+    plan = change_detect.compute_plan(mem, args.since, args.max_candidates,
+                                      use_cache=not getattr(args, "no_cache", False))
     if args.json:
         print(json.dumps(plan, indent=2))
     else:
@@ -585,6 +626,8 @@ def main() -> int:
     p.add_argument("--since")
     p.add_argument("--backlinks")
     p.add_argument("--top-linked", type=int, dest="top_linked")
+    p.add_argument("--no-cache", action="store_true", dest="no_cache",
+                   help="Ignore the persisted index; scan the wiki live.")
     p.set_defaults(func=cmd_search)
 
     p = sub.add_parser("lint", help="Structural + anti-drift health check.")
@@ -605,6 +648,8 @@ def main() -> int:
     p.add_argument("--max-candidates", type=int, default=8)
     p.add_argument("--update-snapshot", action="store_true",
                    help="Record current source hashes as processed and exit.")
+    p.add_argument("--no-cache", action="store_true", dest="no_cache",
+                   help="Ignore the persisted index; scan the wiki live.")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_detect)
 

@@ -82,16 +82,19 @@ def bench_size(n: int) -> dict:
         t_lint, _ = timed(lambda: mem_cli.run_lint(mem, 400, 800))
 
         # change-detect locality: snapshot, mutate ONE source, time the plan.
-        change_detect.current_source_hashes(mem.raw)
+        # The wiki pages are unchanged, so the persisted index stays valid:
+        # detect_cached loads it (O(change)); detect_cold rebuilds (O(wiki)).
         snap = change_detect.current_source_hashes(mem.raw)
         mem.sources_sha.write_text(json.dumps(snap))
         target = next(mem.raw.glob("*.md"))
         target.write_text(target.read_text() + "\nmodifica storage git\n")
-        t_detect, plan = timed(lambda: change_detect.compute_plan(mem, None, 8))
+        t_cold, plan = timed(lambda: change_detect.compute_plan(mem, None, 8, use_cache=False))
+        t_cached, _ = timed(lambda: change_detect.compute_plan(mem, None, 8, use_cache=True))
         n_cand = len(plan["items"][0]["candidates"]) if plan["items"] else 0
 
         return {"n": n, "collect": t_collect, "index": t_index, "search": t_search,
-                "lint": t_lint, "detect": t_detect, "candidates": n_cand}
+                "lint": t_lint, "detect_cold": t_cold, "detect_cached": t_cached,
+                "candidates": n_cand}
 
 
 def _ns(mem):
@@ -102,20 +105,24 @@ def _ns(mem):
 def main():
     sizes = [int(a) for a in sys.argv[1:]] or [50, 200, 1000]
     print("Deterministic core performance (best of 3, milliseconds)\n")
-    hdr = ("pages", "collect", "index", "search", "lint", "detect", "candidates")
-    print("%7s %9s %9s %9s %9s %9s %11s" % hdr)
-    print("-" * 72)
+    hdr = ("pages", "collect", "index", "search", "lint", "detect_cold",
+           "det_cached", "cands")
+    print("%7s %9s %9s %9s %9s %12s %11s %6s" % hdr)
+    print("-" * 80)
     rows = [bench_size(n) for n in sizes]
     for r in rows:
-        print("%7d %9.1f %9.1f %9.3f %9.1f %9.1f %11d"
-              % (r["n"], r["collect"], r["index"], r["search"],
-                 r["lint"], r["detect"], r["candidates"]))
+        print("%7d %9.1f %9.1f %9.3f %9.1f %12.1f %11.2f %6d"
+              % (r["n"], r["collect"], r["index"], r["search"], r["lint"],
+                 r["detect_cold"], r["detect_cached"], r["candidates"]))
     print("\nNotes:")
-    print("- search/detect stay sub-linear-feeling and candidates stay bounded by")
-    print("  --max-candidates (8) regardless of wiki size: that is the token-locality")
-    print("  guarantee — the LLM context never grows with the wiki.")
-    print("- index/lint/detect are O(total content): full re-read each run. Fine to")
-    print("  thousands of pages; see WEAKNESSES.md for the persisted-index path beyond.")
+    print("- candidates stay bounded by --max-candidates (8) at every size: the LLM")
+    print("  context never grows with the wiki (token locality).")
+    print("- When NO curated source changed (the most common merge) detect returns")
+    print("  right after hashing raw/ — it never touches the wiki (truly O(change)).")
+    print("- When a source changed but wiki pages did NOT, detect_cached loads the")
+    print("  validated index instead of re-walking+tokenizing the wiki (~2x here).")
+    print("  Loading still parses the full term table (O(wiki)); a postings-list")
+    print("  index would make it sub-linear — deferred (see WEAKNESSES.md).")
 
 
 if __name__ == "__main__":

@@ -156,10 +156,13 @@ def select_candidates(source_rel: str, source_text: str, pages: list[dict],
     return ranked[:limit]
 
 
-def build_plan(mem, changes: list[dict], pages: list[dict], limit: int) -> dict:
+def build_plan(mem, changes: list[dict], pages: list[dict], limit: int,
+               bm25=None, graph=None) -> dict:
     real = [p for p in pages if "read_error" not in p]
-    bm25 = BM25.build(real)
-    graph = build_graph(real)
+    if bm25 is None:
+        bm25 = BM25.build(real)
+    if graph is None:
+        graph = build_graph(real)
     items = []
     for ch in changes:
         if ch["status"] == "removed":
@@ -186,12 +189,26 @@ def _cited(source_rel: str, pages: list[dict]) -> bool:
     return any(source_rel in p.get("sources", []) for p in pages)
 
 
-def compute_plan(mem, since: str | None, max_candidates: int) -> dict:
-    """Phase 1 end to end: hashes -> changes -> candidate plan. Zero tokens."""
+def compute_plan(mem, since: str | None, max_candidates: int, use_cache: bool = True) -> dict:
+    """Phase 1 end to end: hashes -> changes -> candidate plan. Zero tokens.
+
+    O(change): hashing raw/ is the only mandatory work; if nothing changed we
+    return before touching the wiki. When sources DID change but the wiki pages
+    didn't, we load the validated persisted index instead of re-walking the wiki.
+    """
     current = current_source_hashes(mem.raw)
     snapshot = load_snapshot(mem.sources_sha)
     git_filter = git_changed_under(mem.root.parent, since, mem.raw) if since else None
     changes = detect_changes(current, snapshot, git_filter)
+    if not changes:
+        return {"changes": 0, "items": []}
+
+    if use_cache:
+        from memlib import index_store
+        cache = index_store.load_valid(mem)
+        if cache is not None:
+            return build_plan(mem, changes, cache["records"], max_candidates,
+                              bm25=cache["bm25"], graph=cache["graph"])
     pages = collect_pages(mem.wiki)
     return build_plan(mem, changes, pages, max_candidates)
 
