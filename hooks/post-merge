@@ -29,14 +29,23 @@ fi
 
 echo "[mem] Phase 1: detecting changed curated sources (zero tokens)..."
 # ORIG_HEAD is the pre-merge commit; diff against it to scope to this merge.
-python3 "$CORE/change_detect.py" --memory "$MEMORY" --since ORIG_HEAD
+python3 "$CORE/mem.py" detect --memory "$MEMORY" --since ORIG_HEAD
 
-# --- STUB: Phase 2 + commit -------------------------------------------------
-# TODO: once reconcile.py's LLM call is wired, run it with --apply, then:
-#   python3 "$CORE/reconcile.py" --memory "$MEMORY" --since ORIG_HEAD --apply
-#   python3 "$CORE/mem.py" index --memory "$MEMORY"
-#   python3 "$CORE/mem.py" lint  --memory "$MEMORY"   # fail the hook on drift
-#   python3 "$CORE/change_detect.py" --memory "$MEMORY" --update-snapshot
-#   git add "$MEMORY/wiki" "$MEMORY/index.md" "$MEMORY/log.md"
-#   git commit -m "memory: reconcile after merge"
-echo "[mem] Phase 2 (LLM reconcile + auto-commit) is stubbed — see hooks/post-merge."
+# --- Phase 2 + commit -------------------------------------------------------
+# The LLM call (reconcile) is wired via `claude -p` (uses your subscription, no
+# API key). It is OPT-IN here because it edits files and spends tokens on merge.
+# Set MEM_AUTORECONCILE=1 to enable. NOTE: the hook must run from a real shell,
+# not nested inside a Claude Code session (`claude -p` won't nest).
+if [ "${MEM_AUTORECONCILE:-0}" = "1" ]; then
+  echo "[mem] Phase 2: reconciling (claude -p)..."
+  python3 "$CORE/mem.py" ingest    --memory "$MEMORY" --since ORIG_HEAD --backend llm
+  python3 "$CORE/mem.py" reconcile --memory "$MEMORY" --since ORIG_HEAD --apply
+  python3 "$CORE/mem.py" index     --memory "$MEMORY"
+  python3 "$CORE/mem.py" lint      --memory "$MEMORY" || {
+    echo "[mem] lint failed — review before committing the memory."; exit 1; }
+  python3 "$CORE/mem.py" detect    --memory "$MEMORY" --update-snapshot
+  git add "$MEMORY/wiki" "$MEMORY/index.md" "$MEMORY/log.md"
+  git commit -m "memory: reconcile after merge" || true
+else
+  echo "[mem] Phase 2 disabled (set MEM_AUTORECONCILE=1 to auto-reconcile on merge)."
+fi

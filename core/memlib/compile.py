@@ -126,12 +126,56 @@ def compile_offline(raw_rel: str, raw_text: str, page_type: str = "decision") ->
     return {"slug": slug, "type": page_type, "text": frontmatter.with_frontmatter(meta, body)}
 
 
-def compile_llm(raw_rel: str, raw_text: str, schema: str, candidates: list) -> dict:
-    """Real synthesis backend. STUB.
+_COMPILE_PROMPT = """\
+You are the synthesis step of a curated project-memory tool. Compile ONE raw
+source into ONE atomic wiki page. Output ONLY the page file content (a YAML
+frontmatter block delimited by --- lines, then the markdown body). No preamble,
+no code fence, no explanation.
 
-    TODO(LLM): one model call. Input = {schema, raw_text, candidate pages}.
-    Output = a dense `status: draft|active` page that *synthesizes* (not copies)
-    the source, with `sources:` set and ≥1 outbound `[[link]]`. Density >
-    completeness; never raw text. Treat the raw source as truth.
+Rules:
+- Synthesize densely — do NOT copy the source verbatim. Density > completeness.
+- Treat the raw source as the single source of truth.
+- Frontmatter MUST include exactly these keys: id, type, status, title, tags,
+  sources, created, updated. Use id=%(slug)s, type=%(ptype)s, status=active,
+  created=%(created)s, updated=%(today)s, sources=[%(raw_rel)s].
+- tags: 2-4 short lowercase tags (inline list).
+- Body: an H1 title, a tight summary, then the rationale/consequences. If any of
+  the candidate slugs below are genuinely related, link them inline as [[slug]]
+  (at least one if a real relation exists). Keep under ~60 lines.
+
+SCHEMA (for the page conventions):
+%(schema)s
+
+CANDIDATE SLUGS you may link to (already in the wiki): %(cands)s
+
+RAW SOURCE (%(raw_rel)s):
+%(raw_text)s
+"""
+
+
+def compile_llm(raw_rel: str, raw_text: str, schema: str = "",
+                candidates: list | None = None, page_type: str = "decision",
+                model: str | None = None) -> dict:
+    """Real synthesis backend: one `claude -p` call (uses your subscription).
+
+    Returns {slug, type, text}. Same shape as compile_offline, so downstream
+    (index/lint/graph) is identical. Raises llm.LLMError on failure.
     """
-    raise NotImplementedError("LLM compile backend not wired — use backend='offline'.")
+    from . import llm
+
+    slug, created = slug_and_date(Path(raw_rel))
+    created = created or date.today().isoformat()
+    cand_slugs = ", ".join(c.get("slug", "") for c in (candidates or [])) or "(none)"
+    prompt = _COMPILE_PROMPT % {
+        "slug": slug, "ptype": page_type, "created": created,
+        "today": date.today().isoformat(), "raw_rel": raw_rel,
+        "schema": (schema or "").strip()[:4000], "cands": cand_slugs,
+        "raw_text": raw_text.strip(),
+    }
+    out = llm.run_claude(prompt, model=model or llm.DEFAULT_MODEL)
+    text = llm.strip_code_fence(out)
+    meta, _, malformed = frontmatter.parse(text)
+    if malformed or "id" not in meta or "sources" not in meta:
+        raise llm.LLMError("model output is not a valid page (missing/!malformed "
+                           "frontmatter). Got:\n%s" % text[:400])
+    return {"slug": meta.get("id", slug), "type": meta.get("type", page_type), "text": text}

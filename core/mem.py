@@ -471,10 +471,9 @@ def cmd_ingest(args) -> int:
     if not mem.exists():
         print("No wiki found at %s. Run `mem init` first." % mem.wiki, file=sys.stderr)
         return 1
-    if args.backend == "llm":
-        print("backend=llm is the synthesis stub (no API wired). Use --backend offline.",
-              file=sys.stderr)
-        return 2
+
+    schema_text = mem.schema.read_text(encoding="utf-8") if mem.schema.exists() else ""
+    backend_label = "LLM (claude -p)" if args.backend == "llm" else "offline draft"
 
     plan = change_detect.compute_plan(mem, args.since, args.max_candidates)
     new_items = [it for it in plan["items"] if it["action_hint"] == "compile"]
@@ -484,12 +483,21 @@ def cmd_ingest(args) -> int:
         print("No new curated sources to ingest (0 tokens).")
         return 0
 
+    print("Compiling with backend: %s" % backend_label)
     written = []
     for it in new_items:
         if args.only and it["source"] != args.only:
             continue
         text = (mem.root / it["source"]).read_text(encoding="utf-8")
-        page = compile_mod.compile_offline(it["source"], text, args.type)
+        try:
+            if args.backend == "llm":
+                page = compile_mod.compile_llm(it["source"], text, schema_text,
+                                               it["candidates"], args.type, args.model)
+            else:
+                page = compile_mod.compile_offline(it["source"], text, args.type)
+        except Exception as e:  # llm.LLMError or parse failure
+            print("  ! %s: %s" % (it["source"], e), file=sys.stderr)
+            continue
         target = mem.wiki / TYPE_DIR[args.type] / (page["slug"] + ".md")
         if target.exists() and not args.force:
             print("  = %s (exists; --force to overwrite)" % target.relative_to(mem.root))
@@ -498,25 +506,27 @@ def cmd_ingest(args) -> int:
         target.write_text(page["text"], encoding="utf-8")
         summary = compile_mod.extract_summary(text)
         _catalogue_insert(mem, args.type, page["slug"], summary)
+        status_meta, _, _ = frontmatter.parse(page["text"])
+        status = status_meta.get("status", "draft")
         reconcile.append_log(mem, "ingest", page["slug"],
-                             "source: %s -> %s (offline draft)"
-                             % (it["source"], target.relative_to(mem.root)))
+                             "source: %s -> %s (%s)"
+                             % (it["source"], target.relative_to(mem.root), backend_label))
         written.append(page["slug"])
-        print("  + %s  [draft]" % target.relative_to(mem.root))
+        print("  + %s  [%s]" % (target.relative_to(mem.root), status))
 
     if changed and not args.only:
-        print("\n%d changed/cited source(s) need the LLM reconcile (Phase 2 stub):"
-              % len(changed))
+        verb = ("run `mem reconcile --apply`" if args.backend == "llm"
+                else "need the LLM reconcile (`mem reconcile --apply`)")
+        print("\n%d changed/cited source(s) %s:" % (len(changed), verb))
         for it in changed:
             print("    ~ %s" % it["source"])
 
     # Refresh deterministic artifacts and the snapshot for what we processed.
     cmd_index(argparse.Namespace(memory=args.memory))
-    change_detect.current_source_hashes(mem.raw)  # warm
     snap = change_detect.current_source_hashes(mem.raw)
     mem.sources_sha.write_text(json.dumps(snap, indent=2), encoding="utf-8")
 
-    print("\nIngested %d page(s) as drafts. Refine them, then `mem lint`." % len(written))
+    print("\nIngested %d page(s) [%s]. Then `mem lint`." % (len(written), backend_label))
     return 0
 
 
@@ -611,7 +621,9 @@ def main() -> int:
     p.add_argument("--since")
     p.add_argument("--max-candidates", type=int, default=8)
     p.add_argument("--type", default="decision", choices=list(TYPE_DIR))
-    p.add_argument("--backend", default="offline", choices=["offline", "llm"])
+    p.add_argument("--backend", default="offline", choices=["offline", "llm"],
+                   help="offline = deterministic draft (0 tokens); llm = synthesis via `claude -p`.")
+    p.add_argument("--model", default=None, help="Model for --backend llm (default: sonnet).")
     p.add_argument("--only", help="Ingest only this raw source (rel path).")
     p.add_argument("--force", action="store_true")
     p.set_defaults(func=cmd_ingest)

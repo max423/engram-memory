@@ -113,21 +113,35 @@ mem reconcile                 # dry-run: mostra contesto e stima token
 mem reconcile --show-context
 ```
 
-### Compile offline (loop chiuso senza API key)
+### Backend LLM — col tuo abbonamento, senza API key
 
-`mem ingest` compila le fonti **nuove** in pagine bozza con un backend
-deterministico (estrattivo: titolo, scelta, punti chiave, `sources:` corretto,
-`status: draft`). Niente sintesi vera — quella è il backend LLM, dietro la stessa
-interfaccia (`memlib/compile.py`, `compile_llm` = stub). Così il sistema è
-plug-and-play offline: droppi un file, `mem ingest`, ottieni una bozza da rifinire.
+La "chiamata al modello" **non** è l'API Anthropic: la sintesi passa per Claude
+Code e usa il tuo abbonamento (es. Max). Due modi, a seconda di dove sei:
+
+- **Interattivo** (dentro una sessione Claude Code): i comandi plugin
+  `/mem:ingest` · `/mem:query` — Claude *è* il layer LLM e sintetizza
+  direttamente, leggendo il contesto minimo selezionato dal core.
+- **Headless** (terminale normale / hook al merge / CI): `mem ingest --backend
+  llm` e `mem reconcile --apply` shellano `claude -p` ([core/memlib/llm.py](core/memlib/llm.py)),
+  anch'esso sul tuo abbonamento. L'SDK `anthropic` (con API key) serve solo dove
+  Claude Code non è installato.
+
+`mem ingest` **senza** `--backend llm` usa il backend **offline**: deterministico
+ed estrattivo (titolo, scelta, punti chiave, `sources:`, `status: draft`), zero
+token. È il fallback che tiene il loop runnable senza nulla installato; l'output
+è una bozza da rifinire.
+
+> Nota: `claude -p` non può annidarsi dentro una sessione Claude Code già attiva.
+> Lì usa il comando plugin; il path headless è per terminali/hook reali.
 
 ## Stato
 
-- ✅ **Core deterministico** (`init/index/search/lint/graph/detect`) — funzionante e verificato (20 test).
-- ✅ **Fase 1 change-detect** — funzionante, token zero, località candidati provata dal benchmark.
-- ✅ **Ingest offline** (`mem ingest`) — loop chiuso senza API key (compile estrattivo → bozza).
-- ✅ **Plug-and-play** — `install.sh` + `mem` su PATH + `mem install-hooks`.
-- 🔌 **Sintesi LLM** (`compile_llm`) e **Fase 2 reconcile** (`llm_reconcile`) — plumbing reale, chiamata LLM = STUB con TODO.
+- ✅ **Core deterministico** (`init/index/search/lint/graph/detect`) — verificato (25 test).
+- ✅ **Fase 1 change-detect** — token zero, località candidati provata dal benchmark.
+- ✅ **Ingest** — offline (estrattivo, 0 token) **e** LLM (`--backend llm` via `claude -p`).
+- ✅ **Fase 2 reconcile** (`mem reconcile --apply`) — applier reale + chiamata LLM cablata.
+- ✅ **Plug-and-play** — `install.sh` + `mem` su PATH + `mem install-hooks` + plugin Claude Code.
+- 🔧 **Da irrobustire** — fedeltà delle patch di reconcile sul campo (vedi `WEAKNESSES.md`).
 - 🔌 **Hook al merge** (`hooks/post-merge`) — Fase 1 attiva; Fase 2 + auto-commit = STUB.
 - 🔌 **Plugin Claude Code** (`/mem:ingest|query|lint`) — comandi thin che pilotano la CLI.
 

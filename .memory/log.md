@@ -18,3 +18,7 @@ status: draft → active
 ## [2026-03-10] ingest | Anti-drift
 source: raw/2026-03-10-reconcile-al-merge.md → wiki/concepts/anti-drift.md
 status: draft → active
+
+## [2026-06-08] ingest | Feature flag in un file YAML versionato
+source: raw/2026-06-08-feature-flags.md → wiki/decisions/feature-flags-yaml.md
+status: draft → active (sintesi in-session, path /mem:ingest)

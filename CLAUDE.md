@@ -63,11 +63,17 @@ Funzionante:
   compile), stdlib only, Py 3.9+.
 - `.memory/` di esempio: 3 decisioni + 1 concetto, collegati e citati, lint pulito.
 
-Ancora STUB (il differenziatore, dove investire — vedi `WEAKNESSES.md`):
-- **Sintesi LLM** `compile_llm` e **Fase 2 reconcile** `llm_reconcile`: plumbing
-  reale e testato (apply_patch, status machine, log), manca solo la chiamata LLM.
+- **Sintesi LLM cablata senza API key** `core/memlib/llm.py`: passa per Claude
+  Code (abbonamento). Due modi: interattivo via plugin `/mem:ingest` (Claude è il
+  layer LLM); headless via `claude -p` (`mem ingest --backend llm`,
+  `mem reconcile --apply`). `claude -p` non si annida in una sessione attiva → lì
+  si usa il comando plugin.
+
+Ancora da irrobustire (vedi `WEAKNESSES.md`):
+- **Fedeltà patch di reconcile**: l'applier è severo (str_replace unico/esatto);
+  il loop prompt→patch va testato sul campo dal terminale (path `claude -p`).
 - **Hook al merge** `hooks/post-merge`: Fase 1 attiva, Fase 2 + auto-commit da fare.
-- **Plugin Claude Code** `plugin/`: comandi thin `/mem:ingest|query|lint`.
+- **Backend offline** = estrattivo, non sintesi (fallback a token zero).
 
 ## Convenzioni di lavoro
 

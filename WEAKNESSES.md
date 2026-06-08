@@ -25,19 +25,39 @@ re-read and re-tokenize the whole wiki each run — O(total content). At 2000
 pages that's ~0.5–0.8 s, which is fine at merge time. It is *not* fine at tens of
 thousands of pages.
 
+## How the LLM call is wired (no API key needed)
+
+The "model call" is **not** the Anthropic API. The synthesis step
+(`compile_llm`, `llm_reconcile`) routes through Claude Code, using your
+subscription (e.g. Max). Two modes, by environment:
+
+- **Interactive** (inside a Claude Code session): the `/mem:ingest|query` plugin
+  commands — Claude *is* the LLM layer and does the synthesis directly, reading
+  the minimal context the core selected. No subprocess.
+- **Headless** (normal terminal / git hook / CI): `mem ingest --backend llm`
+  and `mem reconcile --apply` shell out to `claude -p` ([core/memlib/llm.py](core/memlib/llm.py)),
+  which also uses your subscription. A direct `anthropic` SDK call is only needed
+  on a box where Claude Code isn't installed.
+
+Caveat: `claude -p` refuses to nest inside an existing Claude Code session
+(shared runtime). Inside a session, use the plugin command; the headless path is
+for real terminals/hooks. `run_claude` detects this and says so.
+
 ## Weaknesses, by severity
 
-### High — the differentiator is still a stub
-- **`reconcile` Phase 2 (the LLM call) is not wired.** The plumbing around it is
-  real and tested (`apply_patch` with str_replace + ambiguity guard, status
-  machine, append-only log), but the actual model decision
-  (`no-op/update/add/contradiction/deprecate`) is a `NotImplementedError`. Until
-  it's wired, the memory does not truly "update itself" on a *changed* source.
-- **Offline `compile` is extractive, not synthesis.** `mem ingest` (default
-  backend) structures a raw source into a `status: draft` page — title, the
-  explicit choice line, key bullets, a correct `sources:` anchor. It does **not**
-  rewrite/densify. "Grows by itself" is only fully true once `compile_llm` is
-  wired; today offline ingest gives you drafts a human (or the LLM) refines.
+### High — synthesis fidelity, not plumbing
+- **Reconcile patches depend on the model emitting exact `str_replace` strings.**
+  The applier is strict on purpose — `apply_patch` refuses a missing match and
+  raises on an ambiguous (non-unique) one — so a sloppy patch is rejected, not
+  mis-applied. That's safe but means some reconciles will no-op when they
+  shouldn't until the prompt/patch loop is hardened (e.g. retry with anchored
+  context). Verified offline with stubbed model output; the live patch loop wants
+  more real-world testing.
+- **Offline `compile` is extractive, not synthesis.** `mem ingest` *without*
+  `--backend llm` structures a raw source into a `status: draft` page (title,
+  choice line, key bullets, correct `sources:`). It does **not** densify/rewrite —
+  that's the `llm` backend. Offline is the zero-token fallback that keeps the
+  pipeline runnable with nothing installed; its output is a draft to refine.
 
 ### Medium — search quality and index freshness
 - **`detect` and `search` rebuild BM25 every run** instead of loading the
@@ -77,8 +97,9 @@ thousands of pages.
   sandboxed.
 
 ## Suggested next steps (in priority order)
-1. Wire `compile_llm` + `llm_reconcile` (the single model call each). Everything
-   downstream already exists and is tested.
+1. Harden the reconcile patch loop: anchor `str_replace` targets, retry on a
+   missing/ambiguous match, and exercise it on real changed sources from a normal
+   terminal (the live `claude -p` path).
 2. Make `detect`/`search` load a *validated* persisted index (rebuild only the
    docs whose mtime/SHA changed) → `detect` drops from O(wiki) to O(change).
 3. Light normalization in `tokenize` (lowercasing is done; add a small IT/EN

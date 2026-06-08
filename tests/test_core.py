@@ -137,9 +137,35 @@ class TestCompile(unittest.TestCase):
         self.assertIn("markdown nel repo", body)
         self.assertEqual(pages.extract_wikilinks(body), [])
 
-    def test_llm_backend_is_stub(self):
-        with self.assertRaises(NotImplementedError):
-            compile_mod.compile_llm("raw/x.md", "x", "", [])
+    def test_llm_backend_parses_model_output(self):
+        # Stub the model call — tests never hit the network / `claude`.
+        from memlib import llm
+        canned = ("---\nid: storage-in-git\ntype: decision\nstatus: active\n"
+                  "title: Storage in git\ntags: [storage, git]\n"
+                  "sources:\n  - raw/2026-03-04-storage-in-git.md\n"
+                  "created: 2026-03-04\nupdated: 2026-03-04\n---\n"
+                  "# Storage in git\n\nSintesi densa con [[altra-pagina]].\n")
+        orig = llm.run_claude
+        llm.run_claude = lambda *a, **k: canned
+        try:
+            page = compile_mod.compile_llm("raw/2026-03-04-storage-in-git.md",
+                                           self.RAW, "schema", [{"slug": "altra-pagina"}])
+        finally:
+            llm.run_claude = orig
+        self.assertEqual(page["slug"], "storage-in-git")
+        meta, body, _ = frontmatter.parse(page["text"])
+        self.assertEqual(meta["status"], "active")
+        self.assertEqual(pages.extract_wikilinks(body), ["altra-pagina"])
+
+    def test_llm_backend_rejects_garbage(self):
+        from memlib import llm
+        orig = llm.run_claude
+        llm.run_claude = lambda *a, **k: "Sure! Here is your page: hello"
+        try:
+            with self.assertRaises(llm.LLMError):
+                compile_mod.compile_llm("raw/x.md", "x", "", [])
+        finally:
+            llm.run_claude = orig
 
 
 class TestChangeDetect(unittest.TestCase):
@@ -205,6 +231,43 @@ class TestReconcilePlumbing(unittest.TestCase):
         ctx = {"schema": "x" * 400, "source_text": "y" * 400,
                "candidate_pages": [{"text": "z" * 400}]}
         self.assertEqual(reconcile.estimate_tokens(ctx), 300)  # 1200 chars / 4
+
+
+class TestLLM(unittest.TestCase):
+    def test_strip_code_fence(self):
+        from memlib import llm
+        self.assertEqual(llm.strip_code_fence("```json\n[1,2]\n```"), "[1,2]")
+        self.assertEqual(llm.strip_code_fence("plain"), "plain")
+
+    def test_extract_json_tolerant(self):
+        from memlib import llm
+        self.assertEqual(llm.extract_json('Here: [{"a":1}] done'), [{"a": 1}])
+        self.assertEqual(llm.extract_json("```\n{\"x\":2}\n```"), {"x": 2})
+        with self.assertRaises(llm.LLMError):
+            llm.extract_json("no json at all")
+
+    def test_run_claude_missing_binary(self):
+        from memlib import llm
+        orig = llm.claude_available
+        llm.claude_available = lambda: False
+        try:
+            with self.assertRaises(llm.LLMError):
+                llm.run_claude("hi")
+        finally:
+            llm.claude_available = orig
+
+    def test_reconcile_parses_decisions(self):
+        from memlib import llm
+        ctx = {"schema": "s", "source": "raw/x.md", "source_text": "new truth",
+               "candidate_pages": [{"slug": "p", "rel_path": "decisions/p.md",
+                                    "text": "old body"}]}
+        orig = llm.run_claude
+        llm.run_claude = lambda *a, **k: '[{"slug":"p","action":"no-op"}]'
+        try:
+            decisions = reconcile.llm_reconcile(ctx)
+        finally:
+            llm.run_claude = orig
+        self.assertEqual(decisions, [{"slug": "p", "action": "no-op"}])
 
 
 class TestCliEndToEnd(unittest.TestCase):

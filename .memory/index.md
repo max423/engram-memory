@@ -9,6 +9,7 @@
 - [[storage-git-native]] — la memoria è markdown nel repo, niente database.
 - [[ricerca-bm25]] — selezione pagine con BM25 lessicale, niente embedding.
 - [[reconcile-al-merge]] — la memoria si aggiorna solo al merge su `main`, in 2 fasi.
+- [[feature-flags-yaml]] — feature flag in un `flags.yaml` versionato, non un servizio esterno.
 
 ## concepts
 

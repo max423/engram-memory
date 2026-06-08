@@ -77,25 +77,59 @@ def estimate_tokens(ctx: dict) -> int:
 # --------------------------------------------------------------------------- #
 # The LLM call — STUB.
 # --------------------------------------------------------------------------- #
-def llm_reconcile(ctx: dict) -> list[dict]:
-    """Return a decision per candidate page (+ possible 'add').
+_RECONCILE_PROMPT = """\
+You are the reconcile step of a curated project-memory tool. A curated source
+changed. Decide, for EACH candidate page, the minimal action. Output ONLY a JSON
+array (no prose, no code fence). Each element:
 
-    TODO(LLM): replace this stub with a single model call. Send `ctx` (schema +
-    raw source + candidate pages) and require structured output:
+  {"slug": "<page slug>",
+   "action": "no-op" | "update" | "contradiction" | "deprecate",
+   "patches": [{"old": "<exact substring of the page>", "new": "<replacement>"}],
+   "rationale": "<one short line>"}
 
-        [{ "slug": "...", "action": "update",
-           "patches": [{"old": "<exact text>", "new": "<replacement>"}],
-           "rationale": "..." }, ...]
+Rules:
+- Treat the RAW SOURCE below as the source of truth, NOT the existing pages.
+- Prefer "no-op" — it is the common case. Only act on what the source changed.
+- "update": surgical str_replace. Each "old" MUST be an EXACT, unique substring
+  of that page's current text. Never rewrite the whole page. Omit patches for
+  no-op.
+- "contradiction": the source conflicts with the page — flag it, do not rewrite.
+- "deprecate": the source makes the page obsolete.
+- Only include pages that actually need action; you may return [] for all no-op.
 
-    Prompt invariants:
-      - treat ctx["source_text"] as the source of truth; do NOT trust the page.
-      - prefer no-op (the ~95% case); only patch what the source actually changed.
-      - patches must be surgical str_replace, never full-page rewrites.
-      - 'add' requires the new page to carry >=1 inbound wikilink.
-      - 'contradiction' flags + proposes; it never silently overwrites.
+SCHEMA:
+%(schema)s
+
+CHANGED RAW SOURCE (%(source)s):
+%(source_text)s
+
+CANDIDATE PAGES:
+%(pages)s
+"""
+
+
+def llm_reconcile(ctx: dict, model: str | None = None) -> list[dict]:
+    """One `claude -p` call (uses your subscription). Returns decisions list.
+
+    Decision shape consumed by _apply_decisions:
+      [{slug, action, patches:[{old,new}], rationale}]
     """
-    raise NotImplementedError(
-        "reconcile Phase 2 LLM call is not wired yet — this is the MVP stub.")
+    from memlib import llm
+
+    pages_blob = "\n\n".join(
+        "### page slug=%s (%s)\n%s" % (p["slug"], p["rel_path"], p["text"])
+        for p in ctx["candidate_pages"])
+    prompt = _RECONCILE_PROMPT % {
+        "schema": (ctx.get("schema") or "").strip()[:4000],
+        "source": ctx["source"],
+        "source_text": ctx["source_text"].strip(),
+        "pages": pages_blob or "(none)",
+    }
+    out = llm.run_claude(prompt, model=model or llm.DEFAULT_MODEL)
+    decisions = llm.extract_json(out)
+    if not isinstance(decisions, list):
+        raise llm.LLMError("expected a JSON array of decisions, got: %r" % type(decisions))
+    return decisions
 
 
 # --------------------------------------------------------------------------- #

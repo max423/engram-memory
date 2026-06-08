@@ -26,4 +26,5 @@ codice, a costo infrastrutturale zero.
 ## Conseguenze
 
 Niente query SQL, niente migrazioni: ogni operazione del core produce un diff
-piccolo e leggibile, e il rollback è un `git revert`.
+piccolo e leggibile, e il rollback è un `git revert`. Lo stesso principio guida
+scelte affini, come i [[feature-flags-yaml]] versionati nel repo.
