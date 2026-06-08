@@ -1,4 +1,6 @@
-# engram — a project memory that stays aligned with your code
+# Engram Memory
+
+> A project memory that stays aligned with your code.
 
 engram gives Claude Code (or any assistant) a **persistent, curated memory of your
 project** that lives in your repo as markdown, updates itself as you work, and
@@ -6,13 +8,13 @@ costs almost no tokens. You install it once; from then on it just works while yo
 use Claude Code normally.
 
 Two things it remembers:
-- **Decisions** — the *why* (why Postgres over Mongo, why JWT, the tradeoffs).
-- **A code map** — the *what/how* (modules, languages, what each part does), kept
+- **Decisions** - the *why* (why Postgres over Mongo, why JWT, the tradeoffs).
+- **A code map** - the *what/how* (modules, languages, what each part does), kept
   aligned with the code automatically.
 
 One principle makes it cheap: **code does the deterministic work; the LLM only does
 synthesis.** Token cost is proportional to what *changed*, not to the size of the
-memory. Zero dependencies — **Python 3.9+, stdlib only**. No API key (it uses your
+memory. Zero dependencies - **Python 3.9+, stdlib only**. No API key (it uses your
 Claude subscription).
 
 ---
@@ -35,7 +37,7 @@ so every change is a reviewable diff you can inspect or roll back.
 
 ## 1. Install (once)
 
-Clone this repo somewhere and run the installer — it puts the `mem` command on your
+Clone this repo somewhere and run the installer - it puts the `mem` command on your
 PATH and runs the test suite:
 
 ```bash
@@ -60,7 +62,7 @@ git add .memory && git commit -m "add engram memory"
 
 That's it. From here on you don't have to run anything.
 
-## 3. Use it — just work
+## 3. Use it - just work
 
 Open Claude Code in your project as usual (`claude`). It receives the project
 digest at startup, recalls and records on its own, and the memory re-aligns with
@@ -77,10 +79,10 @@ mem review                 # what needs your judgment (stale/contradicted/missin
 
 ---
 
-## Does the memory go into git? (yes — but you push)
+## Does the memory go into git? (yes - but you push)
 
 The memory is **versioned with your code**, on purpose (it's git-native). But
-engram **never pushes for you** — pushing stays your normal manual step.
+engram **never pushes for you** - pushing stays your normal manual step.
 
 **Committed** (travels with the repo on `git push`):
 
@@ -93,7 +95,7 @@ engram **never pushes for you** — pushing stays your normal manual step.
 .memory/schema.md    the domain schema
 ```
 
-**Not committed** (gitignored — regenerable, never the source of truth):
+**Not committed** (gitignored - regenerable, never the source of truth):
 
 ```
 .memory/index/       BM25 index, graph, SHA snapshots
@@ -107,7 +109,7 @@ git commit -m "..."     # engram also makes a local [mem] auto-update commit
 git push                # now the updated memory goes to the remote too
 ```
 
-Because it's in the repo, **your whole team shares one project memory** — they get
+Because it's in the repo, **your whole team shares one project memory** - they get
 it on `git pull`, and memory updates are reviewable in the same PR as the code. If
 you'd rather *not* share it (e.g. personal notes), add `.memory/` to `.gitignore`
 or keep it on a separate branch. To skip the auto-update on a specific commit:
@@ -123,7 +125,7 @@ with a mandatory `sources:` anchor. Pages link to each other and follow a state
 machine `draft → active → stale → contradicted → archived`.
 
 **Code map (the *what/how*).** `mem context` maintains `.memory/context.md`: a
-compact overview derived from the code — modules, languages, manifests, a one-line
+compact overview derived from the code - modules, languages, manifests, a one-line
 description each. It's **change-driven**: the deterministic core groups and hashes
 the tree at 0 tokens, and only modules whose code changed get re-described (offline
 from README/docstring, or `--backend llm` to enrich just those). This is the layer
@@ -158,19 +160,19 @@ driver** (see below).
 
 When a source or the code changes, engram updates only what's affected:
 
-**Phase 1 — WHAT to touch (code, 0 tokens).** Detects changed sources (SHA-256) and
+**Phase 1 - WHAT to touch (code, 0 tokens).** Detects changed sources (SHA-256) and
 selects the few impacted pages with 5 signals: `sources:`, BM25, graph backlinks,
 source-overlap, Adamic-Adar. No change → it returns immediately, touching nothing.
 
-**Phase 2 — HOW to edit (LLM, 1 call, minimal context).** Gets schema + the changed
+**Phase 2 - HOW to edit (LLM, 1 call, minimal context).** Gets schema + the changed
 source + the candidate pages, and classifies each page
 `no-op / update / add / contradiction / deprecate`, applying surgical patches
 (`str_replace`, tolerant to whitespace/quotes/dashes, with retry if a match is
-missing/ambiguous). The LLM never sees the whole wiki — only the few candidates.
+missing/ambiguous). The LLM never sees the whole wiki - only the few candidates.
 
 ---
 
-## LLM backend — your subscription, no API key
+## LLM backend - your subscription, no API key
 
 Synthesis goes through Claude Code, not the Anthropic API:
 
@@ -178,11 +180,11 @@ Synthesis goes through Claude Code, not the Anthropic API:
   `/mem:lint`, and the auto-invoked `project-memory` skill.
 - **Headless** (terminal/hook/CI): `mem ingest --backend llm`, `mem reconcile
   --apply`, `mem context --backend llm` shell out to `claude -p`. (Can't nest inside
-  an active session — there the in-session assistant is the LLM.)
+  an active session - there the in-session assistant is the LLM.)
 
 Without `--backend llm`, the **offline** backend is deterministic and extractive
 (0 tokens): it structures sources into `draft` pages and derives the code map from
-README/docstrings — so the whole loop runs anywhere, even with no LLM at all.
+README/docstrings - so the whole loop runs anywhere, even with no LLM at all.
 
 ---
 
@@ -192,8 +194,8 @@ README/docstrings — so the whole loop runs anywhere, even with no LLM at all.
 mem init .                   # bootstrap .memory/ (--template software|research|product)
 mem install-hooks .          # wire the 3 automations + merge driver + git hooks
 mem context                  # build/refresh the code map (change-driven, 0 tokens)
-mem digest                   # compact digest (map + decisions) — what SessionStart injects
-mem note "a durable fact"    # record a fact as a source (+compile) — the write primitive
+mem digest                   # compact digest (map + decisions) - what SessionStart injects
+mem note "a durable fact"    # record a fact as a source (+compile) - the write primitive
 mem ingest                   # compile new raw/ sources into pages (--backend offline|llm)
 mem search "terms"           # BM25 search (+ --type/--tag/--backlinks/--status)
 mem detect                   # what changed (0 tokens); the reconcile plan
@@ -225,12 +227,12 @@ python3 tests/bench.py       # benchmark 50→2000 pages
 
 On the sample memory: **recall@1 1.00 · recall@3 1.00 · MRR 1.00**, clean health →
 `PASS`. `search` ~9 ms at 2000 pages; candidate pages **constant (8)** at every
-scale — the LLM context never grows with the wiki.
+scale - the LLM context never grows with the wiki.
 
 **Real-corpus benchmark** (40 ADRs from `architecture-decision-record`): ingest in
 ~0.3 s (0 tokens); index build 0.9 ms; search 0.04 ms/query; candidate locality
 constant at 8. Retrieval **recall@1 0.95 / recall@3 1.00 / MRR 0.97** with
-domain-vocabulary queries; drops to 0.60 on paraphrases with no lexical overlap —
+domain-vocabulary queries; drops to 0.60 on paraphrases with no lexical overlap -
 the known cost of pure BM25 (zero deps, no embeddings). Three deterministic levers
 (0 tokens) recover it: `mem relink` takes orphans 40→1; `mem alias` lifts
 adversarial recall@1 0.60→0.70; `mem hubs` adds disambiguation hubs.
@@ -243,11 +245,11 @@ adversarial recall@1 0.60→0.70; `mem hubs` adds disambiguation hubs.
 |---|---|
 | **Purpose** | A project memory tied to the code: curated *decisions* + an auto-maintained *code map*. |
 | **Shape** | Deterministic core CLI (0 tokens for ~90% of operations) + a thin LLM layer for synthesis only. |
-| **Update** | On commit (code map) and on merge (decisions) — change-driven, never the whole wiki. |
+| **Update** | On commit (code map) and on merge (decisions) - change-driven, never the whole wiki. |
 | **Storage** | All markdown in the repo, versioned. No database. |
 | **Differentiator** | token-efficiency + git-native + transparent Claude Code integration. |
 
-**Anti-drift** (the real risk — a wiki that "re-reads its own output"): every page
+**Anti-drift** (the real risk - a wiki that "re-reads its own output"): every page
 has a mandatory `sources:`; on update the LLM re-reads the **source**, never the old
 page; surgical patches keep diffs small and rollback-able; lint flags staleness;
 humans review in the PR.
@@ -292,13 +294,13 @@ Attribution details in [`NOTICE`](NOTICE).
 
 ## License & citing
 
-**MIT © 2026 max423** — see [`LICENSE`](LICENSE). You're free to use, modify and
+**MIT © 2026 max423** - see [`LICENSE`](LICENSE). You're free to use, modify and
 distribute it; the only condition is that you **keep the copyright/attribution
 notice** (i.e. credit the author). If you use engram in a project, a paper, or a
-product, please **cite it** — GitHub's "Cite this repository" button reads
+product, please **cite it** - GitHub's "Cite this repository" button reads
 [`CITATION.cff`](CITATION.cff):
 
-> engram — a project memory that stays aligned with your code. max423, 2026.
+> Engram Memory: a project memory that stays aligned with your code. max423, 2026.
 > https://github.com/max423/engram-memory
 
 This project also composes code from `praneybehl/llm-wiki-plugin` (MIT) and
