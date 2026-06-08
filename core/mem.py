@@ -635,6 +635,71 @@ def cmd_ingest(args) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# add-synthesis — file a worthy answer back into the memory as a synthesis page
+# --------------------------------------------------------------------------- #
+def cmd_add_synthesis(args) -> int:
+    from memlib.compile import _slugify
+
+    mem = resolve(args.memory)
+    if not mem.exists():
+        print("No wiki found at %s. Run `mem init` first." % mem.wiki, file=sys.stderr)
+        return 1
+    links = [s.strip() for s in (args.links or "").split(",") if s.strip()]
+    if not links:
+        print("A synthesis must cite the pages it draws from (--links a,b).",
+              file=sys.stderr)
+        return 1
+
+    pages = {p["slug"]: p for p in collect_pages(mem.wiki) if "read_error" not in p}
+    missing = [l for l in links if l not in pages]
+    if missing:
+        print("Unknown linked pages: %s" % ", ".join(missing), file=sys.stderr)
+        return 1
+
+    # Anti-drift: ground the synthesis in the union of its sources' raw files.
+    sources, tags = [], []
+    for l in links:
+        for s in pages[l].get("sources", []):
+            if s not in sources:
+                sources.append(s)
+        for t in pages[l].get("tags", []):
+            if t not in tags:
+                tags.append(t)
+    if not sources:
+        print("Linked pages carry no sources; cannot ground the synthesis.",
+              file=sys.stderr)
+        return 1
+
+    body = args.body if args.body is not None else sys.stdin.read()
+    body = body.strip() or "(sintesi)"
+    slug = args.slug or _slugify(args.title)
+    # Ensure every cited page appears as a wikilink (graph edges + justifies sources).
+    if not all(("[[%s]]" % l) in body for l in links):
+        body += "\n\nDeriva da: " + " · ".join("[[%s]]" % l for l in links)
+
+    today = date.today().isoformat()
+    meta = {"id": slug, "type": "synthesis", "status": "active",
+            "title": args.title, "tags": tags[:4] or ["sintesi"],
+            "sources": sources, "created": today, "updated": today}
+    target = mem.wiki / "synthesis" / (slug + ".md")
+    if target.exists() and not args.force:
+        print("%s already exists (use --force)." % target.relative_to(mem.root),
+              file=sys.stderr)
+        return 1
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(frontmatter.with_frontmatter(meta, "# %s\n\n%s\n" % (args.title, body)),
+                      encoding="utf-8")
+    _catalogue_insert(mem, "synthesis", slug, args.title)
+    import reconcile
+    reconcile.append_log(mem, "synthesis", slug,
+                         "filed answer citing: %s" % ", ".join(links))
+    cmd_index(argparse.Namespace(memory=args.memory))
+    print("  + %s  [synthesis]  sources: %s" % (target.relative_to(mem.root),
+                                                ", ".join(sources)))
+    return 0
+
+
+# --------------------------------------------------------------------------- #
 # install-hooks — wire the merge hook into .git/hooks (plug-and-play)
 # --------------------------------------------------------------------------- #
 def cmd_install_hooks(args) -> int:
@@ -783,6 +848,15 @@ def main() -> int:
     p.add_argument("repo", nargs="?", default=".", help="Repo root (default: .).")
     p.add_argument("--force", action="store_true")
     p.set_defaults(func=cmd_install_hooks)
+
+    p = sub.add_parser("add-synthesis", help="File a worthy answer as a synthesis page.")
+    add_memory(p)
+    p.add_argument("--title", required=True)
+    p.add_argument("--links", required=True, help="Comma-separated slugs the answer draws from.")
+    p.add_argument("--body", default=None, help="Answer body (default: read stdin).")
+    p.add_argument("--slug", default=None)
+    p.add_argument("--force", action="store_true")
+    p.set_defaults(func=cmd_add_synthesis)
 
     p = sub.add_parser("merge", help="Resolve conflict markers in index.md/log.md by union.")
     add_memory(p)

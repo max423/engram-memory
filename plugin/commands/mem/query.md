@@ -20,3 +20,8 @@ Steps:
 4. Answer concisely and **cite the pages** you used by slug (e.g.
    `[[reconcile-al-merge]]`). If the memory doesn't cover it, say so plainly — do
    not invent.
+5. If the answer is a durable synthesis worth keeping (a comparison, an analysis,
+   a connection you discovered), offer to file it back so it compounds:
+   `mem add-synthesis --title "<title>" --links <slug1>,<slug2> --body "<answer>"`
+   It lands in `wiki/synthesis/`, grounded in the union of the cited pages'
+   sources. Don't file trivial or one-off lookups.

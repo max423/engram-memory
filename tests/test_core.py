@@ -569,6 +569,27 @@ class TestCliEndToEnd(unittest.TestCase):
             self.assertIn("research", schema.lower())
             self.assertIn("paper", schema.lower())   # research-specific entity
 
+    def test_add_synthesis_grounds_in_linked_sources(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._run("init", ".", cwd=d)
+            raw = Path(d) / ".memory" / "raw"
+            (raw / "2026-01-01-alpha.md").write_text("# A\n\nScelta: **alpha.**\n")
+            (raw / "2026-01-02-beta.md").write_text("# B\n\nScelta: **beta.**\n")
+            self._run("ingest", "--memory", ".memory", cwd=d)
+            r = self._run("add-synthesis", "--memory", ".memory",
+                          "--title", "Alpha vs Beta", "--links", "alpha,beta",
+                          "--body", "Confronto tra [[alpha]] e [[beta]].", cwd=d)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            page = Path(d) / ".memory" / "wiki" / "synthesis" / "alpha-vs-beta.md"
+            self.assertTrue(page.exists())
+            meta, _, _ = frontmatter.parse(page.read_text())
+            self.assertEqual(meta["type"], "synthesis")
+            # grounded in the union of the linked pages' raw sources
+            self.assertIn("raw/2026-01-01-alpha.md", meta["sources"])
+            self.assertIn("raw/2026-01-02-beta.md", meta["sources"])
+            # the memory stays lint-clean after filing the answer
+            self.assertEqual(self._run("lint", "--memory", ".memory", cwd=d).returncode, 0)
+
     def test_lint_catches_bad_page(self):
         with tempfile.TemporaryDirectory() as d:
             self._run("init", ".", cwd=d)
