@@ -29,7 +29,7 @@ bin/mem             # wrapper: mette `mem` sul PATH (auto-discovery di .memory/)
 install.sh          # setup plug-and-play (link su PATH + init + hook + smoke test)
 core/
   mem.py            # CLI unica: init · index · search · lint · graph · detect ·
-                    #            reconcile · ingest · install-hooks
+                    #            reconcile · ingest · install-hooks · merge
   change_detect.py  # Fase 1 del reconcile: COSA toccare (SHA-256 + 3 segnali), 0 token
   reconcile.py      # Fase 2 del reconcile: COME modificare (STUB chiamata LLM)
   memlib/           # libreria condivisa, stdlib only

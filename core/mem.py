@@ -598,6 +598,40 @@ def cmd_install_hooks(args) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# merge — resolve git conflict markers in catalogue/log files (zero token)
+# --------------------------------------------------------------------------- #
+def cmd_merge(args) -> int:
+    from memlib import merge as merge_mod
+    mem = resolve(args.memory)
+    if args.files:
+        targets = [Path(f) for f in args.files]
+    else:
+        targets = [p for p in (mem.index_md, mem.log) if p.exists()]
+
+    any_resolved = False
+    for path in targets:
+        if not path.exists():
+            print("  ? %s (not found)" % path, file=sys.stderr)
+            continue
+        text = path.read_text(encoding="utf-8")
+        if not merge_mod.has_conflicts(text):
+            print("  = %s (no conflict)" % path)
+            continue
+        # Default dedup: slug for the catalogue, whole-line elsewhere (log etc.).
+        dedup = args.dedup or ("slug" if path.name == "index.md" else "line")
+        resolved, n = merge_mod.resolve(text, dedup=dedup)
+        if args.dry_run:
+            print("  ~ %s (%d hunk(s), dedup=%s) — dry run, not written" % (path, n, dedup))
+        else:
+            path.write_text(resolved, encoding="utf-8")
+            print("  + %s (%d hunk(s) unioned, dedup=%s)" % (path, n, dedup))
+            any_resolved = True
+    if any_resolved:
+        print("\nResolved by union. Review the diff, then `git add` the files.")
+    return 0
+
+
+# --------------------------------------------------------------------------- #
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="mem", description=__doc__,
@@ -677,6 +711,13 @@ def main() -> int:
     p.add_argument("repo", nargs="?", default=".", help="Repo root (default: .).")
     p.add_argument("--force", action="store_true")
     p.set_defaults(func=cmd_install_hooks)
+
+    p = sub.add_parser("merge", help="Resolve conflict markers in index.md/log.md by union.")
+    add_memory(p)
+    p.add_argument("files", nargs="*", help="Files to resolve (default: index.md + log.md).")
+    p.add_argument("--dedup", choices=["slug", "line"], help="Dedup key (default: auto).")
+    p.add_argument("--dry-run", action="store_true")
+    p.set_defaults(func=cmd_merge)
 
     args = parser.parse_args()
     if not getattr(args, "func", None):

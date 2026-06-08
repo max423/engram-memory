@@ -383,6 +383,40 @@ class TestIndexCache(unittest.TestCase):
             self.assertEqual(cached["items"][0]["source"], "raw/s1.md")
 
 
+class TestMerge(unittest.TestCase):
+    def test_no_conflict_passthrough(self):
+        from memlib import merge
+        self.assertFalse(merge.has_conflicts("a\nb\n"))
+        out, n = merge.resolve("a\nb\n")
+        self.assertEqual(n, 0)
+
+    def test_union_dedup_by_slug(self):
+        from memlib import merge
+        text = ("## decisions\n"
+                "<<<<<<< HEAD\n"
+                "- [[a]] — ours.\n- [[b]] — only ours.\n"
+                "=======\n"
+                "- [[a]] — theirs (dup slug).\n- [[c]] — only theirs.\n"
+                ">>>>>>> branch\n")
+        self.assertTrue(merge.has_conflicts(text))
+        out, n = merge.resolve(text, dedup="slug")
+        self.assertEqual(n, 1)
+        self.assertNotIn("<<<<<<<", out)
+        # a appears once (deduped by slug), b and c both kept
+        self.assertEqual(out.count("[[a]]"), 1)
+        self.assertIn("[[b]]", out)
+        self.assertIn("[[c]]", out)
+
+    def test_diff3_base_ignored(self):
+        from memlib import merge
+        text = ("<<<<<<< HEAD\nX\n||||||| base\nORIG\n=======\nY\n>>>>>>> b\n")
+        out, n = merge.resolve(text, dedup="line")
+        self.assertEqual(n, 1)
+        self.assertIn("X", out)
+        self.assertIn("Y", out)
+        self.assertNotIn("ORIG", out)   # base is dropped, not unioned
+
+
 class TestCliEndToEnd(unittest.TestCase):
     def _run(self, *args, cwd):
         return subprocess.run([sys.executable, str(CORE / "mem.py"), *args],

@@ -90,11 +90,13 @@ for real terminals/hooks. `run_claude` detects this and says so.
   deferred until scale demands it.
 
 ### Medium — git lifecycle edges
-- **`index.md` is the merge-conflict soft spot.** `log.md` is strictly
-  append-only (conflict-free) and wiki pages are atomic (one concept = one file),
-  but the catalogue insert edits `index.md` in the middle, so concurrent ingests
-  on different branches can conflict there. The `index/` artifacts and
-  `sources.sha256` snapshot are git-ignored, so they never conflict.
+- **`index.md` is the merge-conflict soft spot — now with a helper.** `log.md`
+  is append-only and wiki pages are atomic, but the catalogue insert edits
+  `index.md` mid-file, so concurrent ingests on different branches can conflict.
+  `mem merge` resolves such markers deterministically by unioning the two sides
+  (deduping the catalogue by `[[slug]]`), handling 2-way and diff3 markers. Prose
+  conflicts inside a wiki page are still out of scope (those want LLM reconcile).
+  The `index/` artifacts and `sources.sha256` are git-ignored, so they never conflict.
 - **`--since ORIG_HEAD` in the hook is best-effort.** Squash-merges and rebases
   may not leave `ORIG_HEAD` where expected; the SHA-256 snapshot (the default,
   git-independent path) is the robust fallback and catches what the ref diff misses.
@@ -122,5 +124,6 @@ for real terminals/hooks. `run_claude` detects this and says so.
    query loads only the relevant term lists → sub-linear `search`/`detect`.
 3. ~~Light normalization in `tokenize`~~ (done: stopwords + light stemmer,
    recall@1 0.90→1.00). Next: hybrid BM25+vector re-rank when scale demands it.
-4. A `mem merge` helper for the residual `index.md` conflict case (reuse the
-   reconcile prompt on the two sides).
+4. ~~A `mem merge` helper for the residual `index.md` conflict~~ (done:
+   deterministic union, slug-dedup, 2-way + diff3). Next: extend to prose
+   conflicts inside a page via the reconcile prompt on the two sides.

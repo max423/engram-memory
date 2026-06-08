@@ -69,11 +69,16 @@ Funzionante:
   `mem reconcile --apply`). `claude -p` non si annida in una sessione attiva → lì
   si usa il comando plugin.
 
-Ancora da irrobustire (vedi `WEAKNESSES.md`):
-- **Fedeltà patch di reconcile**: l'applier è severo (str_replace unico/esatto);
-  il loop prompt→patch va testato sul campo dal terminale (path `claude -p`).
-- **Hook al merge** `hooks/post-merge`: Fase 1 attiva, Fase 2 + auto-commit da fare.
-- **Backend offline** = estrattivo, non sintesi (fallback a token zero).
+Miglioramenti landati (vedi `WEAKNESSES.md`):
+- **Patch di reconcile robuste**: `apply_patch` ancorato/tollerante allo spazio
+  (APPLIED/NOT_FOUND/AMBIGUOUS) + loop di retry che ri-chiede al modello.
+- **Indice persistito validato** `core/memlib/index_store.py`: detect/search
+  saltano il wiki quando è immutato (cache ~2x; O(change) se nessuna fonte cambia).
+- **Tokenizer normalizzato** (stopword IT/EN + stemmer leggero): recall@1 0.90→1.00.
+- **`mem merge`**: risoluzione deterministica dei conflitti su index.md/log.md (union).
+
+Ancora aperto: il loop patch di reconcile va provato sul campo (path `claude -p`
+dal terminale); hook Fase 2 opt-in; backend offline = estrattivo per scelta.
 
 ## Convenzioni di lavoro
 
