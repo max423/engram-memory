@@ -74,18 +74,34 @@ python3 core/mem.py lint                                   # esce !=0 se trova p
 python3 core/mem.py graph                                  # hub, orfani, link rotti
 ```
 
-## Test e performance
+## Test, valutazione e performance
 
 ```bash
-python3 tests/run.py         # 20 test (unittest, zero dipendenze)
+python3 tests/run.py         # 25 unit test (unittest, zero dipendenze)
+python3 tests/eval.py        # "funziona davvero?": scorecard PASS/FAIL
+python3 tests/eval.py --judge  # + giudice di fedeltà LLM (da terminale vero)
 python3 tests/bench.py       # benchmark su wiki da 50 → 2000 pagine
 ```
 
-La suite copre frontmatter, pages/wikilink, BM25, grafo, compile offline,
-change-detect, il plumbing di reconcile e un end-to-end della CLI. Numeri di
-performance e limiti onesti in **[`WEAKNESSES.md`](WEAKNESSES.md)** — in sintesi:
-`search` resta ~9 ms a 2000 pagine e le pagine candidate restano **costanti (8)**
-a ogni scala (la garanzia di località dei token).
+I **test** provano la correttezza deterministica (frontmatter, wikilink, BM25,
+grafo, compile, change-detect, plumbing reconcile, end-to-end CLI).
+
+La **valutazione** (`tests/eval.py`) risponde alla domanda diversa "*la memoria
+recupera la cosa giusta?*", con soglie e PASS/FAIL su:
+1. **Recupero** — query etichettate (parafrasi, non keyword) → recall@1/@3, MRR;
+2. **Salute** — lint pulito, 0 orfani, ogni pagina cita una fonte esistente, link integri;
+3. **Anti-drift** — muta una fonte su una copia usa-e-getta e verifica che il
+   change-detect la rilevi e ranki #1 la pagina che la cita;
+4. **Fedeltà** (opt-in `--judge`) — il modello giudica se ogni claim della pagina
+   è sostenuto dalla sua fonte.
+
+Sul `.memory/` di esempio oggi: **recall@1 0.90 · recall@3 1.00 · MRR 0.95**,
+salute pulita, anti-drift centrato → `RESULT: PASS`. Funziona anche su una
+memoria tua: `python3 tests/eval.py --memory /path/.memory --labels tue.json`.
+
+Performance e limiti onesti in **[`WEAKNESSES.md`](WEAKNESSES.md)**: `search`
+resta ~9 ms a 2000 pagine e le pagine candidate restano **costanti (8)** a ogni
+scala (località dei token).
 
 ### Il cuore: il reconcile in due fasi
 

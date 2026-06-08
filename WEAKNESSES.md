@@ -25,6 +25,20 @@ re-read and re-tokenize the whole wiki each run — O(total content). At 2000
 pages that's ~0.5–0.8 s, which is fine at merge time. It is *not* fine at tens of
 thousands of pages.
 
+## Correctness, measured (not asserted)
+
+`python3 tests/eval.py` turns "does it work?" into a scorecard. On the sample:
+**recall@1 0.90 · recall@3 1.00 · MRR 0.95**, health clean, anti-drift on target.
+The single retrieval miss is honest and instructive: *"attivare/disattivare una
+feature senza deploy"* ranks `anti-drift` above `feature-flags-yaml` at rank 2 —
+a paraphrase whose words overlap more with the wrong page. It's exactly the
+lexical-BM25 limitation below, surfaced as a number rather than hidden.
+
+What the harness can and cannot prove: checks 1–3 are deterministic and gate CI.
+Check 4 (faithfulness — does a page invent/omit/contradict its source?) is the
+one layer code can't settle alone; it needs an LLM judge (`--judge`) or a human.
+That is the honest boundary of "automatically verified".
+
 ## How the LLM call is wired (no API key needed)
 
 The "model call" is **not** the Anthropic API. The synthesis step
