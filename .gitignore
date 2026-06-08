@@ -1,0 +1,12 @@
+# Generated, regenerable memory index artifacts (never the source of truth).
+.memory/index/*.json
+.memory/index/*.idx
+.memory/index/sources.sha256
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# macOS
+.DS_Store

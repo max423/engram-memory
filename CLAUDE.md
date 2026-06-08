@@ -1,0 +1,72 @@
+# CLAUDE.md — Progetto "memoria di progetto curata"
+
+> Primer per Claude Code. Leggi questo file all'inizio di ogni sessione.
+> Il contesto completo (architettura, decisioni, survey, MVP) è in
+> **`brief-progetto-memoria-wiki.md`** — leggilo prima di lavorare.
+
+## Cos'è il progetto
+
+Un prodotto che mantiene una **memoria di progetto curata** dentro qualsiasi
+codebase: una knowledge base markdown di decisioni/note che cresce da sola a ogni
+merge, versionata in git, ottimizzata per **consumare il minimo di token**.
+
+## Principi non negoziabili
+
+1. **Token-minimal**: tutto ciò che è deterministico lo fa il codice (indice,
+   ricerca BM25, grafo, lint, change-detection). L'LLM tocca **solo la sintesi**,
+   con contesto minimo (diff + poche pagine candidate, mai l'intero wiki).
+2. **Git-native**: storage = markdown nel repo. Niente database.
+3. **Memoria curata**: l'utente decide cosa è una fonte (drop in `raw/`); il
+   sistema la processa. Non auto-documentazione del codice.
+4. **Aggiornamento al merge**: il reconcile scatta su merge verso il branch
+   canonico, non su ogni commit di ogni branch.
+5. **Anti-drift**: ogni claim ha `sources:`; in reconcile si rilegge la fonte
+   aggiornata, mai la vecchia pagina come verità; patch chirurgiche (`str_replace`).
+
+## Architettura (sintesi)
+
+```
+THIN LLM LAYER   → compile(source) · reconcile(diff, pagine)   [contesto minimo]
+CORE CLI (0 token)→ index · search(BM25) · graph · diff · lint · git-hooks
+STORAGE (git)    → /.memory/ : raw/ · wiki/ · schema.md · index.md · log.md · index/
+```
+
+Reconcile in 2 fasi: **(1)** il codice trova le pagine impattate (sources, BM25,
+backlink) a token zero; **(2)** l'LLM decide per ogni pagina no-op/update/add/
+contradiction/deprecate e applica patch. Le pagine hanno una macchina a stati
+`draft → active → stale → contradicted → archived` (vedi brief §5).
+
+## Strategia di build (NON partire da zero)
+
+Comporre forkando il core e rubando pezzi:
+
+- **Fork base** → `praneybehl/llm-wiki-plugin` (BM25+lint puliti, stdlib, MIT).
+- **Fase 1 change-detect** → idea da `ktrysmt/llmwiki` (SHA-256 + differential merge).
+- **Hook al merge** → pattern da `balukosuri/docs-from-code`.
+- **Schema decision/memory** → da `Oshayr/LLM-Wiki`.
+- **Ingestion PDF** → `scripts/extract.py` da `virgiliojr94/book-to-skill`.
+- **Studia (non forkare)** → `axoviq-ai/synthadoc` (AGPL+CLA) per la macchina a stati.
+
+## Stato attuale
+
+Scaffold eseguibile in piedi (vedi `README.md`). Funzionante e verificato:
+- **Core deterministico** `core/mem.py`: `init · index · search · lint · graph`.
+- **Fase 1 change-detect** `core/change_detect.py`: SHA-256 + 3 segnali (sources/
+  BM25/grafo), token zero.
+- Libreria condivisa `core/memlib/` (frontmatter · pages · bm25 · graph · store),
+  stdlib only.
+- `.memory/` di esempio: 3 decisioni + 1 concetto già compilati e collegati.
+
+Ancora STUB (il differenziatore, dove investire):
+- **Fase 2 reconcile** `core/reconcile.py`: plumbing reale (apply_patch, status
+  machine, log), manca solo la chiamata LLM.
+- **Hook al merge** `hooks/post-merge`: Fase 1 attiva, Fase 2 + auto-commit da fare.
+- **Plugin Claude Code** `plugin/`: comandi thin `/mem:ingest|query|lint`.
+
+## Convenzioni di lavoro
+
+- Codice del core: Python 3.10+ **stdlib only**, zero dipendenze runtime.
+- Ogni pagina wiki = un concetto (atomica), soft cap ~400 righe, hard cap ~800.
+- `log.md` append-only con prefisso `## [YYYY-MM-DD] <op> | <titolo>`.
+- Tieni il wiki in git; ogni operazione del core deve produrre diff piccoli e puliti.
+- Aggiorna questo `CLAUDE.md` e il brief quando cambiano decisioni di design.

@@ -1,0 +1,16 @@
+This project composes and adapts code from the following MIT-licensed projects.
+Their original copyright and license terms are retained.
+
+- praneybehl/llm-wiki-plugin  (MIT) — Copyright (c) 2026 Praney Behl
+    Base of the deterministic core. The frontmatter parser, BM25 search, and
+    structural lint in core/memlib/ are adapted from this project.
+
+Patterns studied and reimplemented (no code copied):
+
+- ktrysmt/llmwiki        (MIT) — SHA-256 change detection (core/change_detect.py)
+- balukosuri/docs-from-code (MIT) — merge-hook → reconcile → commit (hooks/post-merge)
+- Oshayr/LLM-Wiki        (MIT) — decision/memory page schema (.memory/schema.md)
+- virgiliojr94/book-to-skill (MIT) — token-minimal compilation principles
+- axoviq-ai/synthadoc    (AGPL+CLA) — STUDIED ONLY for the page status machine.
+    No code from synthadoc is included or derived; the state machine here is an
+    independent reimplementation of a documented concept.

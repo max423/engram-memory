@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# post-merge — STUB hook: refresh the project memory after a merge to main.
+#
+# The reconcile trigger is "merge onto the canonical branch", not every commit
+# (see .memory decision: reconcile-al-merge). Install with:
+#
+#     ln -sf ../../hooks/post-merge .git/hooks/post-merge
+#     chmod +x .git/hooks/post-merge
+#
+# git fires post-merge after `git merge` / `git pull` completes. We only act on
+# the canonical branch; on feature branches the memory is left untouched.
+set -euo pipefail
+
+CANONICAL_BRANCH="${MEM_CANONICAL_BRANCH:-main}"
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+CORE="$REPO_ROOT/core"
+MEMORY="$REPO_ROOT/.memory"
+
+branch="$(git rev-parse --abbrev-ref HEAD)"
+if [ "$branch" != "$CANONICAL_BRANCH" ]; then
+  echo "[mem] on '$branch' (not '$CANONICAL_BRANCH') — skipping reconcile."
+  exit 0
+fi
+
+if [ ! -d "$MEMORY" ]; then
+  echo "[mem] no .memory/ in this repo — skipping."
+  exit 0
+fi
+
+echo "[mem] Phase 1: detecting changed curated sources (zero tokens)..."
+# ORIG_HEAD is the pre-merge commit; diff against it to scope to this merge.
+python3 "$CORE/change_detect.py" --memory "$MEMORY" --since ORIG_HEAD
+
+# --- STUB: Phase 2 + commit -------------------------------------------------
+# TODO: once reconcile.py's LLM call is wired, run it with --apply, then:
+#   python3 "$CORE/reconcile.py" --memory "$MEMORY" --since ORIG_HEAD --apply
+#   python3 "$CORE/mem.py" index --memory "$MEMORY"
+#   python3 "$CORE/mem.py" lint  --memory "$MEMORY"   # fail the hook on drift
+#   python3 "$CORE/change_detect.py" --memory "$MEMORY" --update-snapshot
+#   git add "$MEMORY/wiki" "$MEMORY/index.md" "$MEMORY/log.md"
+#   git commit -m "memory: reconcile after merge"
+echo "[mem] Phase 2 (LLM reconcile + auto-commit) is stubbed — see hooks/post-merge."
