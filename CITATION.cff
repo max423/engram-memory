@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+title: "engram — a project memory that stays aligned with your code"
+message: "If you use this software, please cite it and keep the attribution (MIT)."
+type: software
+authors:
+  - alias: max423
+repository-code: "https://github.com/max423/engram-memory"
+url: "https://github.com/max423/engram-memory"
+abstract: >-
+  engram is a curated, git-native, token-minimal project memory for coding
+  assistants: a markdown knowledge base of decisions plus a code-aligned context
+  map that updates itself as you work. The deterministic core (index, BM25 search,
+  graph, change-detection) runs with zero tokens; the LLM is used only for synthesis.
+keywords:
+  - project-memory
+  - llm
+  - claude-code
+  - git-native
+  - token-minimal
+  - bm25
+license: MIT

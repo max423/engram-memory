@@ -290,7 +290,17 @@ non-permissive code):
 
 Attribution details in [`NOTICE`](NOTICE).
 
-## License
+## License & citing
 
-MIT. Composes code from `praneybehl/llm-wiki-plugin` (MIT); reimplements patterns
-from other projects — see [`NOTICE`](NOTICE).
+**MIT © 2026 max423** — see [`LICENSE`](LICENSE). You're free to use, modify and
+distribute it; the only condition is that you **keep the copyright/attribution
+notice** (i.e. credit the author). If you use engram in a project, a paper, or a
+product, please **cite it** — GitHub's "Cite this repository" button reads
+[`CITATION.cff`](CITATION.cff):
+
+> engram — a project memory that stays aligned with your code. max423, 2026.
+> https://github.com/max423/engram-memory
+
+This project also composes code from `praneybehl/llm-wiki-plugin` (MIT) and
+reimplements patterns from other projects; that upstream attribution is required by
+their licenses and is kept in [`NOTICE`](NOTICE).
