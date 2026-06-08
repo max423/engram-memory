@@ -13,3 +13,9 @@ __pycache__/
 
 # analisi interna, non pubblicata
 WEAKNESSES.md
+
+# doc/primer locali — non pubblicati nel repo (solo README è committato)
+CLAUDE.md
+brief-progetto-memoria-wiki.md
+spec-memoria-wiki-mvp.md
+plugin/README.md
