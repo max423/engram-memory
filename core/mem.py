@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 from datetime import date
 from pathlib import Path
@@ -566,6 +567,110 @@ def _catalogue_insert(mem: MemoryPaths, page_type: str, slug: str, summary: str)
     mem.index_md.write_text("\n".join(out) + "\n", encoding="utf-8")
 
 
+def _relink_wiki(mem, top_k: int = 3) -> int:
+    """Rewrite each page's deterministic `## Correlate` section; return #changed."""
+    from memlib import relink as relink_mod
+    pages = collect_pages(mem.wiki)
+    related = relink_mod.compute_related(pages, top_k=top_k)
+    changed = 0
+    for p in pages:
+        if "read_error" in p:
+            continue
+        path = Path(p["path"])
+        old = path.read_text(encoding="utf-8")
+        new = relink_mod.upsert_section(old, related.get(p["slug"], []))
+        if new != old:
+            path.write_text(new, encoding="utf-8")
+            changed += 1
+    return changed
+
+
+def cmd_relink(args) -> int:
+    mem = resolve(args.memory)
+    if not mem.exists():
+        print("No wiki at %s. Run `mem init` first." % mem.wiki, file=sys.stderr)
+        return 1
+    n = _relink_wiki(mem, top_k=args.top_k)
+    print("Relinked %d page(s) (deterministic Correlate, top_k=%d)." % (n, args.top_k))
+    cmd_index(argparse.Namespace(memory=args.memory))
+    return 0
+
+
+def cmd_hubs(args) -> int:
+    """Detect ambiguous decision clusters; with --apply, write disambiguation hubs."""
+    from memlib import hubs
+    mem = resolve(args.memory)
+    if not mem.exists():
+        print("No wiki at %s. Run `mem init` first." % mem.wiki, file=sys.stderr)
+        return 1
+    pages = collect_pages(mem.wiki)
+    clusters = hubs.detect_clusters(pages, min_size=args.min_size)
+    if not clusters:
+        print("No clusters of >= %d related decisions found." % args.min_size)
+        return 0
+
+    if not args.apply:
+        print("Detected %d cluster(s) (use --apply to create hub pages):\n" % len(clusters))
+        for term, members in clusters:
+            print("  %s-options  (%d):  %s" % (term, len(members), ", ".join(members)))
+        return 0
+
+    import reconcile
+    concepts = mem.wiki / TYPE_DIR["concept"]
+    concepts.mkdir(parents=True, exist_ok=True)
+    written = 0
+    for term, members in clusters:
+        hub = hubs.build_hub_page(term, members, pages)
+        target = concepts / (hub["slug"] + ".md")
+        existed = target.exists()
+        target.write_text(hub["text"], encoding="utf-8")
+        _catalogue_insert(mem, "concept", hub["slug"],
+                          "hub: %d opzioni per %s" % (len(members), term))
+        reconcile.append_log(mem, "hub", hub["slug"],
+                             "disambiguation hub over: %s" % ", ".join(members))
+        written += 1
+        print("  %s %s  (%d options)"
+              % ("~" if existed else "+", target.relative_to(mem.root), len(members)))
+    # Reconnect: relink so members link back to their hub (symmetric) — else the
+    # freshly written hubs are themselves orphans (nobody links TO them).
+    _relink_wiki(mem, top_k=3)
+    cmd_index(argparse.Namespace(memory=args.memory))
+    print("\nWrote %d hub page(s). Then `mem lint`." % written)
+    return 0
+
+
+def cmd_alias(args) -> int:
+    """Curate a page's `aliases:` — synonyms indexed for search (anti lexical-miss)."""
+    from memlib.pages import find_by_slug
+    mem = resolve(args.memory)
+    pages = collect_pages(mem.wiki)
+    page = find_by_slug(pages, args.slug)
+    if not page or "read_error" in page:
+        print("No page with slug '%s'." % args.slug, file=sys.stderr)
+        return 1
+    path = Path(page["path"])
+    meta, body, _ = frontmatter.parse(path.read_text(encoding="utf-8"))
+    current = page["aliases"]
+    incoming = [a.strip() for a in args.aliases if a.strip()]
+    if args.remove:
+        new = [a for a in current if a not in incoming]
+    elif args.replace:
+        new = incoming
+    else:  # add (dedup, preserve order)
+        new, seen = [], set()
+        for a in [*current, *incoming]:
+            if a.lower() not in seen:
+                seen.add(a.lower()); new.append(a)
+    if new:
+        meta["aliases"] = new
+    else:
+        meta.pop("aliases", None)
+    path.write_text(frontmatter.with_frontmatter(meta, body), encoding="utf-8")
+    print("%s aliases: %s" % (args.slug, new or "(none)"))
+    cmd_index(argparse.Namespace(memory=args.memory))
+    return 0
+
+
 def cmd_ingest(args) -> int:
     import change_detect
     import reconcile
@@ -624,6 +729,13 @@ def cmd_ingest(args) -> int:
         print("\n%d changed/cited source(s) %s:" % (len(changed), verb))
         for it in changed:
             print("    ~ %s" % it["source"])
+
+    # Offline pages are born unconnected — link them deterministically (0 tokens)
+    # so the wiki is a graph, not a pile. The LLM backend links inline already.
+    if written and args.backend == "offline" and not args.no_relink:
+        n = _relink_wiki(mem, top_k=args.relink_top_k)
+        if n:
+            print("  linked %d page(s) (deterministic Correlate)" % n)
 
     # Refresh deterministic artifacts and the snapshot for what we processed.
     cmd_index(argparse.Namespace(memory=args.memory))
@@ -798,7 +910,54 @@ def cmd_install_hooks(args) -> int:
     print("  On merge to '%s' (MEM_CANONICAL_BRANCH): Phase 1 + Phase 2 ingest "
           "(MEM_BACKEND=offline|llm) + auto-commit (MEM_AUTORECONCILE=1)."
           % os.environ.get("MEM_CANONICAL_BRANCH", "main"))
+
+    if not args.no_merge_driver:
+        _wire_merge_driver(repo, core_dir)
     return 0
+
+
+def _wire_merge_driver(repo: Path, core_dir: Path) -> None:
+    """Make `git merge` route .memory files through `mem merge-driver`.
+
+    Two halves of the standard git pattern (cf. git-lfs):
+      * `.memory/.gitattributes` (committed, travels with the repo) maps the
+        files to the `engram` driver — a clone WITHOUT the driver registered
+        just falls back to git's default merge, so this is always safe.
+      * the driver definition lives in `.git/config` (per-clone, references the
+        absolute CLI path) — registered here.
+    """
+    mem_dir = repo / ".memory"
+    if not mem_dir.is_dir():
+        print("  (no .memory/ here — skipped merge-driver wiring)")
+        return
+
+    attrs = mem_dir / ".gitattributes"
+    want = [
+        "# engram: route catalogue/log/pages through `mem merge-driver` (see .git/config).",
+        "index.md   merge=engram",
+        "log.md     merge=engram",
+        "wiki/**    merge=engram",
+    ]
+    existing = attrs.read_text(encoding="utf-8").splitlines() if attrs.exists() else []
+    if not any("merge=engram" in ln for ln in existing):
+        merged = existing + ([""] if existing and existing[-1].strip() else []) + want
+        attrs.write_text("\n".join(merged).rstrip("\n") + "\n", encoding="utf-8")
+        print("  Wrote merge attributes -> %s" % attrs)
+    else:
+        print("  Merge attributes already present -> %s" % attrs)
+
+    driver = '%s %s/mem.py merge-driver %%O %%A %%B %%P' % (sys.executable, core_dir)
+    try:
+        subprocess.check_call(
+            ["git", "-C", str(repo), "config", "merge.engram.name",
+             "engram memory merge driver"])
+        subprocess.check_call(
+            ["git", "-C", str(repo), "config", "merge.engram.driver", driver])
+        print("  Registered git merge driver 'engram' -> %s" % driver)
+    except (subprocess.CalledProcessError, OSError) as e:
+        print("  ! could not register merge driver (%s); run manually:" % e,
+              file=sys.stderr)
+        print('    git config merge.engram.driver "%s"' % driver, file=sys.stderr)
 
 
 # --------------------------------------------------------------------------- #
@@ -832,6 +991,50 @@ def cmd_merge(args) -> int:
             any_resolved = True
     if any_resolved:
         print("\nResolved by union. Review the diff, then `git add` the files.")
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# merge-driver — a REAL git merge driver: `mem merge-driver %O %A %B %P`
+# --------------------------------------------------------------------------- #
+def cmd_merge_driver(args) -> int:
+    """Resolve a 3-way merge of a .memory file, invoked by git during `git merge`.
+
+    git passes the base (%O), ours/output (%A), theirs (%B) temp files and the
+    real pathname (%P). We write the result into %A and exit 0 (resolved) or
+    non-zero (conflict left as markers — git marks the file conflicted).
+
+    Routing by filename, mirroring the design (deterministic, no LLM in git):
+      * index.md / log.md  → deterministic union (catalogue/log never conflict).
+      * wiki/** prose page  → standard git 3-way; on real conflict leave markers
+        and exit 1 so it surfaces in `git status` / `mem review` for an explicit
+        (optionally LLM-assisted) reconcile — we never block `git merge` on a model.
+    """
+    from memlib import merge as merge_mod
+    base, ours, theirs = Path(args.base), Path(args.ours), Path(args.theirs)
+    name = os.path.basename(args.path or str(ours))
+
+    def _read(p: Path) -> str:
+        try:
+            return p.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return ""
+
+    if name in ("index.md", "log.md"):
+        dedup = "slug" if name == "index.md" else "line"
+        merged = merge_mod.union_files(_read(ours), _read(theirs), dedup=dedup)
+        ours.write_text(merged, encoding="utf-8")
+        print("[mem] merge-driver: unioned %s (dedup=%s)" % (name, dedup), file=sys.stderr)
+        return 0
+
+    # Prose page (or anything else): delegate to git's own 3-way merge.
+    rc = subprocess.call(
+        ["git", "merge-file", "-L", "ours", "-L", "base", "-L", "theirs",
+         str(ours), str(base), str(theirs)])
+    if rc != 0:
+        print("[mem] merge-driver: conflict in %s — left markers; resolve then "
+              "`mem review`." % (args.path or name), file=sys.stderr)
+        return 1
     return 0
 
 
@@ -911,11 +1114,40 @@ def main() -> int:
     p.add_argument("--model", default=None, help="Model for --backend llm (default: sonnet).")
     p.add_argument("--only", help="Ingest only this raw source (rel path).")
     p.add_argument("--force", action="store_true")
+    p.add_argument("--no-relink", action="store_true",
+                   help="Skip deterministic auto-linking of offline pages.")
+    p.add_argument("--relink-top-k", type=int, default=3, dest="relink_top_k",
+                   help="Neighbours per page for auto-linking (default: 3).")
     p.set_defaults(func=cmd_ingest)
+
+    p = sub.add_parser("relink",
+                       help="Auto-link pages by a deterministic `## Correlate` section (0 tokens).")
+    add_memory(p)
+    p.add_argument("--top-k", type=int, default=3, dest="top_k",
+                   help="Neighbours per page (default: 3).")
+    p.set_defaults(func=cmd_relink)
+
+    p = sub.add_parser("hubs",
+                       help="Detect ambiguous decision clusters; --apply writes disambiguation hubs.")
+    add_memory(p)
+    p.add_argument("--min-size", type=int, default=3, dest="min_size",
+                   help="Min decisions sharing a term to form a cluster (default: 3).")
+    p.add_argument("--apply", action="store_true", help="Write hub pages (else just list).")
+    p.set_defaults(func=cmd_hubs)
+
+    p = sub.add_parser("alias", help="Curate a page's search aliases (synonyms).")
+    add_memory(p)
+    p.add_argument("slug", help="Page slug to edit.")
+    p.add_argument("aliases", nargs="*", help="Alias phrases (quote multi-word).")
+    p.add_argument("--remove", action="store_true", help="Remove the given aliases.")
+    p.add_argument("--replace", action="store_true", help="Replace all aliases with the given ones.")
+    p.set_defaults(func=cmd_alias)
 
     p = sub.add_parser("install-hooks", help="Install the git merge hook (plug-and-play).")
     p.add_argument("repo", nargs="?", default=".", help="Repo root (default: .).")
     p.add_argument("--force", action="store_true")
+    p.add_argument("--no-merge-driver", action="store_true",
+                   help="Skip wiring the .memory merge driver (.gitattributes + git config).")
     p.set_defaults(func=cmd_install_hooks)
 
     p = sub.add_parser("review", help="List memory items needing human judgment.")
@@ -939,6 +1171,14 @@ def main() -> int:
     p.add_argument("--dedup", choices=["slug", "line"], help="Dedup key (default: auto).")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_merge)
+
+    p = sub.add_parser("merge-driver",
+                       help="git merge driver: `mem merge-driver %%O %%A %%B %%P`.")
+    p.add_argument("base", help="ancestor version (%%O)")
+    p.add_argument("ours", help="current version / output target (%%A)")
+    p.add_argument("theirs", help="other version (%%B)")
+    p.add_argument("path", nargs="?", default="", help="real pathname (%%P)")
+    p.set_defaults(func=cmd_merge_driver)
 
     args = parser.parse_args()
     if not getattr(args, "func", None):

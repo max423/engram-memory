@@ -123,10 +123,17 @@ def collect_pages(wiki_root: Path) -> list[dict]:
             "title": title,
             "tags": _as_list(meta.get("tags")),
             "sources": _as_list(meta.get("sources")),
+            "aliases": _as_list(meta.get("aliases")),
             "links": links,
             "meta": meta,
             "body": body,
-            "tokens": tokenize(body + " " + title + " " + " ".join(_as_list(meta.get("tags")))),
+            # Aliases are indexed alongside the body so a query phrased with words
+            # NOT in the source ("single repository" for monorepo) still matches.
+            "tokens": tokenize(" ".join([
+                body, title,
+                " ".join(_as_list(meta.get("tags"))),
+                " ".join(_as_list(meta.get("aliases"))),
+            ])),
             "line_count": text.count("\n") + 1,
             "malformed_fm": malformed,
         })

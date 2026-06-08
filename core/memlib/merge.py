@@ -94,3 +94,20 @@ def resolve(text: str, dedup: str = "line") -> tuple[str, int]:
         else:
             out_lines.extend(_union(seg[1], seg[2], dedup))
     return "\n".join(out_lines), n_hunks
+
+
+def union_files(ours: str, theirs: str, dedup: str = "line") -> str:
+    """3-way union of two whole files (no conflict markers), deduped by `dedup`.
+
+    Used by the git merge *driver* for the catalogue/log: git hands us `ours`
+    (%A) and `theirs` (%B) as full files; we keep every line from both, dropping
+    duplicates (by slug for the catalogue, by whole line for the log). Order is
+    preserved: all of `ours`, then the lines `theirs` adds. This never produces a
+    conflict — append-only/atomic structure makes union the correct semantics.
+    """
+    trailing_nl = ours.endswith("\n") or theirs.endswith("\n")
+    merged = _union(ours.split("\n"), theirs.split("\n"), dedup)
+    out = "\n".join(merged)
+    if trailing_nl and not out.endswith("\n"):
+        out += "\n"
+    return out

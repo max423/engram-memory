@@ -535,6 +535,25 @@ class TestMerge(unittest.TestCase):
         self.assertIn("Y", out)
         self.assertNotIn("ORIG", out)   # base is dropped, not unioned
 
+    def test_union_files_slug_dedup(self):
+        from memlib import merge
+        ours = "## decisions\n- [[a]] — ours.\n- [[b]] — only ours.\n"
+        theirs = "## decisions\n- [[a]] — theirs (dup).\n- [[c]] — only theirs.\n"
+        out = merge.union_files(ours, theirs, dedup="slug")
+        self.assertEqual(out.count("[[a]]"), 1)   # same slug collapses
+        self.assertIn("[[b]]", out)
+        self.assertIn("[[c]]", out)
+        self.assertEqual(out.count("## decisions"), 1)  # header deduped
+        self.assertTrue(out.endswith("\n"))
+
+    def test_union_files_line_dedup_log(self):
+        from memlib import merge
+        ours = "## [2026-01-01] add | A\nbody A\n"
+        theirs = "## [2026-01-02] add | B\nbody B\n"
+        out = merge.union_files(ours, theirs, dedup="line")
+        self.assertIn("add | A", out)
+        self.assertIn("add | B", out)
+
 
 class TestCliEndToEnd(unittest.TestCase):
     def _run(self, *args, cwd):
@@ -708,6 +727,230 @@ class TestMergeHook(unittest.TestCase):
             self.assertIn("memory: reconcile after merge", log)
             # working tree is clean (everything committed)
             self.assertEqual(git("status", "--porcelain").stdout.strip(), "")
+
+
+class TestRelink(unittest.TestCase):
+    """Deterministic auto-linking: orphans → connected graph, no fabricated links."""
+
+    def _page(self, slug, title, text, sources=None):
+        return {"slug": slug, "title": title, "text": text,
+                "tokens": pages.tokenize(title + " " + text),
+                "sources": sources or ["raw/%s.md" % slug], "links": []}
+
+    def test_symmetric_and_no_self_link(self):
+        from memlib import relink
+        ps = [
+            self._page("postgres", "PostgreSQL database", "relational sql database postgres"),
+            self._page("mysql", "MySQL database", "relational sql database mysql"),
+            self._page("react", "React UI", "frontend javascript ui component react"),
+        ]
+        rel = relink.compute_related(ps, top_k=2)
+        # postgres <-> mysql are mutual (symmetric closure); never links to self
+        self.assertIn("mysql", rel["postgres"])
+        self.assertIn("postgres", rel["mysql"])
+        self.assertNotIn("postgres", rel.get("postgres", []))
+
+    def test_no_fabricated_link_for_isolated_page(self):
+        from memlib import relink
+        ps = [
+            self._page("a", "Alpha topic", "alpha alpha distinct vocabulary one"),
+            self._page("b", "Beta topic", "beta beta separate vocabulary two"),
+            self._page("iso", "Zeta", "zzz qqq xxx wholly unrelated terms"),
+        ]
+        rel = relink.compute_related(ps, top_k=2)
+        # 'iso' shares no terms with a/b → no link invented for it
+        self.assertEqual(rel.get("iso", []), [])
+
+    def test_upsert_idempotent(self):
+        from memlib import relink
+        page = make_page(body="# T\n\nBody.\n")
+        once = relink.upsert_section(page, ["foo", "bar"])
+        twice = relink.upsert_section(once, ["foo", "bar"])
+        self.assertEqual(once, twice)
+        self.assertEqual(once.count(relink.START), 1)
+        self.assertIn("[[foo]]", once)
+
+    def test_upsert_replaces_not_appends(self):
+        from memlib import relink
+        page = make_page(body="# T\n\nBody.\n")
+        v1 = relink.upsert_section(page, ["foo"])
+        v2 = relink.upsert_section(v1, ["baz"])
+        self.assertIn("[[baz]]", v2)
+        self.assertNotIn("[[foo]]", v2)
+        self.assertEqual(v2.count("## Correlate"), 1)
+
+    def test_relink_clears_orphans_end_to_end(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mem_cli.cmd_init(argparse.Namespace(root=str(d), template="software"))
+            dec = d / ".memory" / "wiki" / "decisions"
+            for slug, kw in [("postgres", "relational sql database"),
+                             ("mysql", "relational sql database"),
+                             ("redis", "in memory key value cache store")]:
+                (dec / (slug + ".md")).write_text(
+                    make_page({"id": slug, "title": slug},
+                              "# %s\n\n%s technology choice.\n" % (slug, kw)),
+                    encoding="utf-8")
+            g0 = graph.build_graph(pages.collect_pages(d / ".memory" / "wiki"))
+            self.assertGreaterEqual(len(g0["orphans"]), 3)
+            from memlib.store import resolve as resolve_mem
+            mem_cli._relink_wiki(resolve_mem(d / ".memory"), top_k=2)
+            g1 = graph.build_graph(pages.collect_pages(d / ".memory" / "wiki"))
+            self.assertLess(len(g1["orphans"]), len(g0["orphans"]))
+            self.assertEqual(g1["broken_links"], [])
+
+
+class TestAliases(unittest.TestCase):
+    """`aliases:` are indexed so a query with words NOT in the body still matches."""
+
+    def test_aliases_feed_tokens(self):
+        page = make_page({"aliases": ["zzqqmarker synonym"]},
+                         body="# Monorepo\n\nWe keep all code together.\n")
+        with tempfile.TemporaryDirectory() as d:
+            wiki = Path(d) / "decisions"
+            wiki.mkdir(parents=True)
+            (wiki / "monorepo.md").write_text(page, encoding="utf-8")
+            rec = pages.collect_pages(Path(d))[0]
+            self.assertEqual(rec["aliases"], ["zzqqmarker synonym"])
+            # the alias word is NOT in the body but IS indexed in tokens
+            self.assertNotIn("zzqqmarker", rec["body"].lower())
+            self.assertIn("zzqqmarker", rec["tokens"])
+
+    def test_alias_makes_page_findable(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mem_cli.cmd_init(argparse.Namespace(root=str(d), template="software"))
+            dec = d / ".memory" / "wiki" / "decisions"
+            (dec / "monorepo.md").write_text(
+                make_page({"id": "monorepo", "title": "Monorepo"},
+                          "# Monorepo\n\nAll code in one tree.\n"), encoding="utf-8")
+            from memlib.store import resolve as rmem
+            mem = rmem(d / ".memory")
+            ps = pages.collect_pages(mem.wiki)
+            bm0 = bm25.BM25.build(ps)
+            self.assertEqual(bm0.search("single repository"), [])  # no match yet
+            mem_cli.cmd_alias(argparse.Namespace(
+                memory=d / ".memory", slug="monorepo",
+                aliases=["single repository"], remove=False, replace=False))
+            ps2 = pages.collect_pages(mem.wiki)
+            bm1 = bm25.BM25.build(ps2)
+            self.assertEqual(bm1.search("single repository")[0][0], "monorepo")
+
+
+class TestHubs(unittest.TestCase):
+    """Disambiguation hubs: cluster by shared term, drop boilerplate, link members."""
+
+    def _p(self, slug, title, sources=None):
+        return {"slug": slug, "title": title, "tags": [],
+                "sources": sources or ["raw/%s.md" % slug],
+                "type": "decision", "tokens": [], "links": []}
+
+    def test_detect_cluster_and_drop_boilerplate(self):
+        from memlib import hubs
+        # 8 pages: 3 about databases, all titled "ADR: ..." (boilerplate).
+        ps = [
+            self._p("postgresql-database", "ADR: PostgreSQL database"),
+            self._p("mysql-database", "ADR: MySQL database"),
+            self._p("choosing-a-database", "ADR: choosing a database"),
+            self._p("react-ui", "ADR: React interface"),
+            self._p("vue-ui", "ADR: Vue interface"),
+            self._p("go-lang", "ADR: Go language"),
+            self._p("python-lang", "ADR: Python language"),
+            self._p("css-styling", "ADR: CSS styling"),
+        ]
+        clusters = dict(hubs.detect_clusters(ps, min_size=3))
+        # 'database' clusters its three; 'adr' is in ALL 8 titles -> boilerplate dropped
+        self.assertIn("database", clusters)
+        self.assertEqual(len(clusters["database"]), 3)
+        self.assertNotIn("adr", clusters)
+
+    def test_label_is_readable_surface_form(self):
+        from memlib import hubs
+        ps = [self._p("go-programming-language", "Go programming language"),
+              self._p("rust-programming-language", "Rust programming language"),
+              self._p("java-programming-language", "Java programming language")]
+        clusters = dict(hubs.detect_clusters(ps, min_size=3))
+        # stemmed key would be "programm"; label restores "programming"
+        self.assertIn("programming", clusters)
+
+    def test_hub_page_anchored_to_member_sources(self):
+        from memlib import hubs
+        ps = [self._p("a-db", "ADR a database", ["raw/a.md"]),
+              self._p("b-db", "ADR b database", ["raw/b.md"]),
+              self._p("c-db", "ADR c database", ["raw/c.md"])]
+        hub = hubs.build_hub_page("database", ["a-db", "b-db", "c-db"], ps)
+        meta, body, _ = frontmatter.parse(hub["text"])
+        self.assertEqual(meta["type"], "concept")
+        self.assertIn("hub", meta["tags"])
+        self.assertEqual(set(meta["sources"]), {"raw/a.md", "raw/b.md", "raw/c.md"})
+        for m in ["a-db", "b-db", "c-db"]:
+            self.assertIn("[[%s]]" % m, body)
+
+
+class TestMergeDriver(unittest.TestCase):
+    """`mem merge-driver` wired via install-hooks: a real `git merge` unions the
+    catalogue automatically and flags a conflicting prose page for review."""
+
+    def _setup(self, d, env, git):
+        subprocess.run(["git", "init", str(d)], capture_output=True, env=env)
+        git("checkout", "-b", "main")
+        subprocess.run([sys.executable, str(CORE / "mem.py"), "init", "."],
+                       cwd=str(d), capture_output=True, text=True, env=env)
+        r = subprocess.run([sys.executable, str(CORE / "mem.py"),
+                            "install-hooks", str(d)],
+                           cwd=str(d), capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("merge=engram",
+                      (d / ".memory" / ".gitattributes").read_text(encoding="utf-8"))
+        git("add", "-A"); git("commit", "-m", "baseline")
+
+    def test_catalogue_unions_and_page_conflicts_flagged(self):
+        if shutil.which("git") is None:
+            self.skipTest("git not available")
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            env = {**os.environ,
+                   "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                   "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+                   "MEM_AUTORECONCILE": "0", "MEM_CANONICAL_BRANCH": "main"}
+
+            def git(*a):
+                return subprocess.run(["git", "-C", str(d), *a],
+                                      capture_output=True, text=True, env=env)
+
+            self._setup(d, env, git)
+            idx = d / ".memory" / "index.md"
+
+            # Branch A and B append different catalogue entries at the same tail.
+            git("checkout", "-b", "featA")
+            idx.write_text(idx.read_text() + "- [[decision-a]] — A\n", encoding="utf-8")
+            git("commit", "-am", "A entry")
+            git("checkout", "main"); git("checkout", "-b", "featB")
+            idx.write_text(idx.read_text() + "- [[decision-b]] — B\n", encoding="utf-8")
+            git("commit", "-am", "B entry")
+
+            m = git("merge", "featA", "-m", "merge A")
+            self.assertEqual(m.returncode, 0, m.stderr + m.stdout)  # driver resolved
+            body = idx.read_text(encoding="utf-8")
+            self.assertNotIn("<<<<<<<", body)
+            self.assertIn("[[decision-a]]", body)
+            self.assertIn("[[decision-b]]", body)
+
+            # A prose page edited differently on two branches → conflict + markers.
+            page = d / ".memory" / "wiki" / "decisions" / "db.md"
+            git("checkout", "main"); git("checkout", "-b", "pageA")
+            page.parent.mkdir(parents=True, exist_ok=True)
+            page.write_text("title: X\n\nPostgres.\n", encoding="utf-8")
+            git("add", "-A"); git("commit", "-m", "pageA")
+            git("checkout", "main"); git("checkout", "-b", "pageB")
+            page.parent.mkdir(parents=True, exist_ok=True)
+            page.write_text("title: X\n\nMySQL.\n", encoding="utf-8")
+            git("add", "-A"); git("commit", "-m", "pageB")
+
+            m2 = git("merge", "pageA", "-m", "merge pages")
+            self.assertNotEqual(m2.returncode, 0)  # left for human/LLM resolve
+            self.assertIn("<<<<<<<", page.read_text(encoding="utf-8"))
+            self.assertIn("AA", git("status", "--porcelain").stdout)
 
 
 if __name__ == "__main__":
