@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 from datetime import date
 from pathlib import Path
@@ -135,21 +136,68 @@ def llm_reconcile(ctx: dict, model: str | None = None) -> list[dict]:
 # --------------------------------------------------------------------------- #
 # Deterministic plumbing — REAL (this is what runs after the LLM decides).
 # --------------------------------------------------------------------------- #
-def apply_patch(page_path: Path, old: str, new: str) -> bool:
+# apply_patch outcomes.
+APPLIED = "applied"
+NOT_FOUND = "not_found"
+AMBIGUOUS = "ambiguous"
+
+
+def find_patch_span(text: str, old: str):
+    """Locate `old` in `text`, tolerating whitespace differences.
+
+    LLM-produced patches usually mismatch only on whitespace/newlines, so after
+    an exact attempt we retry with runs of whitespace collapsed to `\\s+`.
+    Returns (start, end) for a UNIQUE match, or AMBIGUOUS / NOT_FOUND.
+    """
+    if not old:
+        return NOT_FOUND
+    # 1. exact, unique
+    c = text.count(old)
+    if c == 1:
+        i = text.find(old)
+        return (i, i + len(old))
+    if c > 1:
+        return AMBIGUOUS
+    # 2. whitespace-tolerant (anchored on the non-space tokens, in order)
+    parts = old.split()
+    if not parts:
+        return NOT_FOUND
+    rx = re.compile(r"\s+".join(re.escape(p) for p in parts))
+    spans = [m.span() for m in rx.finditer(text)]
+    if len(spans) == 1:
+        return spans[0]
+    if len(spans) > 1:
+        return AMBIGUOUS
+    return NOT_FOUND
+
+
+def apply_patch(page_path: Path, old: str, new: str) -> str:
+    """Apply one surgical patch. Returns APPLIED / NOT_FOUND / AMBIGUOUS.
+
+    Never raises on a bad patch and never applies an ambiguous one — a failed
+    patch is reported so the caller can re-prompt the model with feedback.
+    """
     text = page_path.read_text(encoding="utf-8")
-    if old not in text:
-        return False
-    if text.count(old) > 1:
-        raise ValueError("ambiguous patch: %r occurs %d times in %s"
-                         % (old[:40], text.count(old), page_path))
-    page_path.write_text(text.replace(old, new, 1), encoding="utf-8")
-    return True
+    span = find_patch_span(text, old)
+    if span in (NOT_FOUND, AMBIGUOUS):
+        return span
+    i, j = span
+    page_path.write_text(text[:i] + new + text[j:], encoding="utf-8")
+    return APPLIED
 
 
 def set_status(page_path: Path, status: str) -> None:
     text = page_path.read_text(encoding="utf-8")
     meta, body, _ = frontmatter.parse(text)
     meta["status"] = status
+    meta["updated"] = _today()
+    page_path.write_text(frontmatter.with_frontmatter(meta, body), encoding="utf-8")
+
+
+def set_status_updated(page_path: Path) -> None:
+    """Bump only `updated` (an in-place edit keeps the page active)."""
+    text = page_path.read_text(encoding="utf-8")
+    meta, body, _ = frontmatter.parse(text)
     meta["updated"] = _today()
     page_path.write_text(frontmatter.with_frontmatter(meta, body), encoding="utf-8")
 
@@ -206,10 +254,16 @@ def run_reconcile(mem, since, max_candidates, show_context=False, apply=False) -
             _dump_context(ctx)
         if apply:
             try:
-                decisions = llm_reconcile(ctx)
-                _apply_decisions(mem, ctx, decisions)
-            except NotImplementedError as e:
-                print("    [STUB] %s" % e)
+                res = reconcile_apply(mem, ctx)
+                if res["applied"]:
+                    print("    applied (retries: %d)" % res["retries"])
+                else:
+                    print("    %d patch(es) still unmatched after %d retries: %s"
+                          % (len(res["failures"]), res["retries"],
+                             ", ".join("%s/%s" % (f["slug"], f["status"])
+                                       for f in res["failures"])))
+            except Exception as e:  # llm.LLMError etc.
+                print("    [LLM] %s" % e)
         print()
 
     n_pages = len([p for p in pages if "read_error" not in p])
@@ -222,25 +276,91 @@ def run_reconcile(mem, since, max_candidates, show_context=False, apply=False) -
     return 0
 
 
-def _apply_decisions(mem, ctx: dict, decisions: list[dict]) -> None:
-    """Real applier — invoked once llm_reconcile returns. Unused until wired."""
+def _page_path(mem, ctx, slug):
+    rel = next((p["rel_path"] for p in ctx["candidate_pages"] if p["slug"] == slug), None)
+    return (mem.wiki / rel) if rel else None
+
+
+def apply_decisions(mem, ctx: dict, decisions: list[dict]) -> list[dict]:
+    """Apply decisions; return the patches that did NOT cleanly apply.
+
+    Each failure: {slug, old, status}. status/contradiction/deprecate always
+    succeed; only 'update' patches can fail (not_found / ambiguous), and a failed
+    patch is left untouched so the caller can re-prompt for a corrected one.
+    """
+    failures = []
     for d in decisions:
         action = d.get("action")
-        if action == "no-op":
+        if action in (None, "no-op"):
             continue
-        page_path = mem.wiki / next(
-            (p["rel_path"] for p in ctx["candidate_pages"] if p["slug"] == d["slug"]), "")
+        page_path = _page_path(mem, ctx, d.get("slug"))
+        if page_path is None or not page_path.exists():
+            failures.append({"slug": d.get("slug"), "old": None, "status": NOT_FOUND})
+            continue
         if action == "update":
+            applied_any = False
             for patch in d.get("patches", []):
-                apply_patch(page_path, patch["old"], patch["new"])
-            append_log(mem, "update", d["slug"], "source: %s" % ctx["source"])
+                status = apply_patch(page_path, patch.get("old", ""), patch.get("new", ""))
+                if status == APPLIED:
+                    applied_any = True
+                else:
+                    failures.append({"slug": d["slug"], "old": patch.get("old", ""),
+                                     "status": status})
+            if applied_any:
+                set_status_updated(page_path)
+                append_log(mem, "update", d["slug"], "source: %s" % ctx["source"])
         elif action == "contradiction":
             set_status(page_path, "contradicted")
             append_log(mem, "contradiction", d["slug"], d.get("rationale", ""))
         elif action == "deprecate":
             set_status(page_path, "archived")
             append_log(mem, "deprecate", d["slug"], d.get("rationale", ""))
-        # 'add' would write a new page file; omitted in the stub.
+        # 'add' would write a new page file; omitted in the MVP.
+    return failures
+
+
+def reconcile_apply(mem, ctx: dict, model=None, max_retries: int = 2) -> dict:
+    """Full apply loop: decide → apply → on patch failure, re-prompt up to N times.
+
+    Returns {applied: bool, retries: int, failures: [...]}. The retry feeds the
+    exact failed `old` strings + current page text back to the model so it can
+    produce a uniquely-matching patch — this is what makes surgical patches
+    survive an LLM that's slightly off on whitespace/context.
+    """
+    decisions = llm_reconcile(ctx, model=model)
+    failures = apply_decisions(mem, ctx, decisions)
+    retries = 0
+    while failures and retries < max_retries:
+        decisions = llm_fix_patches(ctx, failures, model=model)
+        failures = apply_decisions(mem, ctx, decisions)
+        retries += 1
+    return {"applied": not failures, "retries": retries, "failures": failures}
+
+
+_FIXUP_PROMPT = """\
+Some str_replace patches you proposed did not apply (the "old" text was not found
+or was not unique). Fix ONLY these. Output ONLY a JSON array of decisions
+[{"slug","action":"update","patches":[{"old","new"}]}]. Each "old" MUST be an
+EXACT, UNIQUE substring of the CURRENT page text shown below — copy it verbatim,
+including punctuation and spacing, and extend it with surrounding context until
+it is unique.
+
+FAILED PATCHES (status): %(failures)s
+
+CURRENT PAGES:
+%(pages)s
+"""
+
+
+def llm_fix_patches(ctx: dict, failures: list[dict], model=None) -> list[dict]:
+    from memlib import llm
+    fail_blob = "; ".join("%s [%s]: %r" % (f.get("slug"), f.get("status"),
+                                           (f.get("old") or "")[:60]) for f in failures)
+    pages_blob = "\n\n".join(
+        "### page slug=%s\n%s" % (p["slug"], p["text"]) for p in ctx["candidate_pages"])
+    prompt = _FIXUP_PROMPT % {"failures": fail_blob, "pages": pages_blob}
+    decisions = llm.extract_json(llm.run_claude(prompt, model=model or llm.DEFAULT_MODEL))
+    return decisions if isinstance(decisions, list) else []
 
 
 def _dump_context(ctx: dict) -> None:

@@ -204,16 +204,69 @@ class TestReconcilePlumbing(unittest.TestCase):
         m.log.write_text("# log\n")
         return m
 
-    def test_apply_patch_ok_missing_ambiguous(self):
+    def test_apply_patch_statuses(self):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "p.md"
             p.write_text("alpha beta gamma")
-            self.assertTrue(reconcile.apply_patch(p, "beta", "BETA"))
+            self.assertEqual(reconcile.apply_patch(p, "beta", "BETA"), reconcile.APPLIED)
             self.assertEqual(p.read_text(), "alpha BETA gamma")
-            self.assertFalse(reconcile.apply_patch(p, "nope", "x"))
+            self.assertEqual(reconcile.apply_patch(p, "nope", "x"), reconcile.NOT_FOUND)
             p.write_text("dup dup")
-            with self.assertRaises(ValueError):
-                reconcile.apply_patch(p, "dup", "x")
+            self.assertEqual(reconcile.apply_patch(p, "dup", "x"), reconcile.AMBIGUOUS)
+
+    def test_apply_patch_whitespace_tolerant(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "p.md"
+            p.write_text("the quick\nbrown fox")
+            # patch uses different whitespace than the file — still applies
+            self.assertEqual(reconcile.apply_patch(p, "quick   brown", "Q B"),
+                             reconcile.APPLIED)
+            self.assertEqual(p.read_text(), "the Q B fox")
+
+    def test_reconcile_apply_retries_until_match(self):
+        with tempfile.TemporaryDirectory() as d:
+            m = self._mem(d)
+            page = m.wiki / "decisions" / "a.md"
+            page.write_text(make_page({"id": "a", "status": "active"},
+                                      "# A\n\nold line here.\n"))
+            ctx = {"source": "raw/x.md", "schema": "", "source_text": "new truth",
+                   "candidate_pages": [{"slug": "a", "rel_path": "decisions/a.md",
+                                        "text": page.read_text()}]}
+            bad = lambda c, model=None: [{"slug": "a", "action": "update",
+                                          "patches": [{"old": "DOES NOT EXIST", "new": "x"}]}]
+            good = lambda c, f, model=None: [{"slug": "a", "action": "update",
+                                              "patches": [{"old": "old line here.",
+                                                           "new": "new line here."}]}]
+            o1, o2 = reconcile.llm_reconcile, reconcile.llm_fix_patches
+            reconcile.llm_reconcile, reconcile.llm_fix_patches = bad, good
+            try:
+                res = reconcile.reconcile_apply(m, ctx, max_retries=2)
+            finally:
+                reconcile.llm_reconcile, reconcile.llm_fix_patches = o1, o2
+            self.assertTrue(res["applied"])
+            self.assertEqual(res["retries"], 1)
+            self.assertIn("new line here.", page.read_text())
+
+    def test_reconcile_apply_gives_up_gracefully(self):
+        with tempfile.TemporaryDirectory() as d:
+            m = self._mem(d)
+            page = m.wiki / "decisions" / "a.md"
+            page.write_text(make_page({"id": "a"}, "# A\n\nbody.\n"))
+            ctx = {"source": "raw/x.md", "schema": "", "source_text": "x",
+                   "candidate_pages": [{"slug": "a", "rel_path": "decisions/a.md",
+                                        "text": page.read_text()}]}
+            always_bad = lambda *a, **k: [{"slug": "a", "action": "update",
+                                           "patches": [{"old": "NOPE", "new": "y"}]}]
+            o1, o2 = reconcile.llm_reconcile, reconcile.llm_fix_patches
+            reconcile.llm_reconcile = lambda c, model=None: always_bad()
+            reconcile.llm_fix_patches = lambda c, f, model=None: always_bad()
+            try:
+                res = reconcile.reconcile_apply(m, ctx, max_retries=2)
+            finally:
+                reconcile.llm_reconcile, reconcile.llm_fix_patches = o1, o2
+            self.assertFalse(res["applied"])
+            self.assertEqual(res["retries"], 2)
+            self.assertEqual(res["failures"][0]["status"], reconcile.NOT_FOUND)
 
     def test_set_status_and_log(self):
         with tempfile.TemporaryDirectory() as d:
