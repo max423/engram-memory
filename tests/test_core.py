@@ -263,6 +263,49 @@ class TestReconcilePlumbing(unittest.TestCase):
             self.assertEqual(res["retries"], 1)
             self.assertIn("new line here.", page.read_text())
 
+    def test_patch_tolerates_llm_mangling(self):
+        """Anchors that an LLM subtly rewrites still apply uniquely."""
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "p.md"
+            base = 'Scelta: "markdown nel repo", niente database.'
+            p.write_text("# A\n\n%s\n" % base)
+            # smart quotes + extra spaces + en-dash instead of nothing: still matches
+            mangled = 'Scelta:  “markdown   nel repo”,  niente database.'
+            self.assertEqual(reconcile.apply_patch(p, mangled, "Scelta: solo git."),
+                             reconcile.APPLIED)
+            self.assertIn("Scelta: solo git.", p.read_text())
+
+    def test_patch_dash_variants(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "p.md"
+            p.write_text("limite - accettato")
+            self.assertEqual(reconcile.apply_patch(p, "limite — accettato", "ok"),
+                             reconcile.APPLIED)
+
+    def test_reconcile_apply_converges_with_sloppy_model(self):
+        """End-to-end: a model that returns a whitespace/quote-mangled anchor
+        still lands on the FIRST attempt (no retry needed) thanks to tolerance."""
+        with tempfile.TemporaryDirectory() as d:
+            m = self._mem(d)
+            page = m.wiki / "decisions" / "a.md"
+            page.write_text(make_page({"id": "a", "status": "active"},
+                                      '# A\n\nScelta: "file nel repo", versionati.\n'))
+            ctx = {"source": "raw/x.md", "schema": "", "source_text": "new",
+                   "candidate_pages": [{"slug": "a", "rel_path": "decisions/a.md",
+                                        "text": page.read_text()}]}
+            sloppy = lambda c, model=None: [{"slug": "a", "action": "update",
+                "patches": [{"old": 'Scelta:  “file   nel repo”, versionati.',
+                             "new": "Scelta: database condiviso."}]}]
+            o1 = reconcile.llm_reconcile
+            reconcile.llm_reconcile = sloppy
+            try:
+                res = reconcile.reconcile_apply(m, ctx, max_retries=2)
+            finally:
+                reconcile.llm_reconcile = o1
+            self.assertTrue(res["applied"])
+            self.assertEqual(res["retries"], 0)
+            self.assertIn("Scelta: database condiviso.", page.read_text())
+
     def test_reconcile_apply_gives_up_gracefully(self):
         with tempfile.TemporaryDirectory() as d:
             m = self._mem(d)

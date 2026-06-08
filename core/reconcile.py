@@ -142,14 +142,35 @@ NOT_FOUND = "not_found"
 AMBIGUOUS = "ambiguous"
 
 
-def find_patch_span(text: str, old: str):
-    """Locate `old` in `text`, tolerating whitespace differences.
+_QUOTES = "\"'“”‘’´`"   # ascii + curly/back quotes
+_DASHES = "-‐‑‒–—"       # hyphen + en/em dashes
 
-    LLM-produced patches usually mismatch only on whitespace/newlines, so after
-    an exact attempt we retry with runs of whitespace collapsed to `\\s+`.
-    Returns (start, end) for a UNIQUE match, or AMBIGUOUS / NOT_FOUND.
+
+def _tolerant_regex(old: str) -> str:
+    """Build a regex from `old` that forgives the edits LLMs actually make:
+    any run of whitespace, any quote variant, any dash variant."""
+    out = []
+    for ch in old:
+        if ch.isspace():
+            out.append(r"\s+")
+        elif ch in _QUOTES:
+            out.append("[%s]" % re.escape(_QUOTES))
+        elif ch in _DASHES:
+            out.append("[%s]" % re.escape(_DASHES))
+        else:
+            out.append(re.escape(ch))
+    pattern = "".join(out)
+    return re.sub(r"(?:\\s\+){2,}", r"\\s+", pattern)   # collapse repeats
+
+
+def find_patch_span(text: str, old: str):
+    """Locate `old` in `text`, tolerating the differences an LLM introduces.
+
+    Tries exact-unique first (fast path), then a tolerant regex that forgives
+    whitespace, smart quotes, and dash variants. Returns (start, end) for a
+    UNIQUE match, or AMBIGUOUS / NOT_FOUND — never guesses among several.
     """
-    if not old:
+    if not old or not old.strip():
         return NOT_FOUND
     # 1. exact, unique
     c = text.count(old)
@@ -158,11 +179,11 @@ def find_patch_span(text: str, old: str):
         return (i, i + len(old))
     if c > 1:
         return AMBIGUOUS
-    # 2. whitespace-tolerant (anchored on the non-space tokens, in order)
-    parts = old.split()
-    if not parts:
+    # 2. tolerant match
+    try:
+        rx = re.compile(_tolerant_regex(old))
+    except re.error:
         return NOT_FOUND
-    rx = re.compile(r"\s+".join(re.escape(p) for p in parts))
     spans = [m.span() for m in rx.finditer(text)]
     if len(spans) == 1:
         return spans[0]

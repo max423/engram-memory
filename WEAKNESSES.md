@@ -60,13 +60,15 @@ for real terminals/hooks. `run_claude` detects this and says so.
 ## Weaknesses, by severity
 
 ### High — synthesis fidelity, not plumbing
-- **Reconcile patches depend on the model emitting exact `str_replace` strings.**
-  The applier is strict on purpose — `apply_patch` refuses a missing match and
-  raises on an ambiguous (non-unique) one — so a sloppy patch is rejected, not
-  mis-applied. That's safe but means some reconciles will no-op when they
-  shouldn't until the prompt/patch loop is hardened (e.g. retry with anchored
-  context). Verified offline with stubbed model output; the live patch loop wants
-  more real-world testing.
+- **Reconcile patches are now tolerant + self-correcting (but unproven on a live
+  model).** `find_patch_span` forgives the edits an LLM actually makes — any
+  whitespace run, smart/curly quotes, dash variants — and still refuses to apply
+  an *ambiguous* (non-unique) match rather than guess. When a patch genuinely
+  doesn't match, `reconcile_apply` re-prompts the model with the exact failed
+  anchor + current page text, up to N times. Validated offline by simulating a
+  "sloppy model" (mangled anchors apply on the first try; wrong anchors converge
+  via retry). What's still untested is a *real* `claude -p` reconcile on a real
+  changed source from a terminal — the one check that needs a non-nested session.
 - **Offline `compile` is extractive, not synthesis.** `mem ingest` *without*
   `--backend llm` structures a raw source into a `status: draft` page (title,
   choice line, key bullets, correct `sources:`). It does **not** densify/rewrite —
