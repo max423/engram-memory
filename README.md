@@ -7,7 +7,7 @@ codice; l'LLM tocca solo la sintesi** → il costo in token è proporzionale al
 
 Zero dipendenze, **Python 3.9+ stdlib only**. Design completo:
 [`brief`](brief-progetto-memoria-wiki.md) · [`spec`](spec-memoria-wiki-mvp.md) ·
-[`CLAUDE.md`](CLAUDE.md) · limiti onesti: [`WEAKNESSES.md`](WEAKNESSES.md).
+[`CLAUDE.md`](CLAUDE.md).
 
 ## Quickstart
 
@@ -73,14 +73,6 @@ Sull'esempio: **recall@1 1.00 · recall@3 1.00 · MRR 1.00**, salute pulita → 
 `search` ~9 ms a 2000 pagine; pagine candidate **costanti (8)** a ogni scala
 (località dei token). Funziona su una memoria tua:
 `python3 tests/eval.py --memory /path/.memory --labels tue.json`.
-
-## Stato
-
-Tutto funzionante e testato: core deterministico, Fase 1, ingest offline+LLM,
-Fase 2 reconcile (patch tolleranti + retry), hook al merge con **auto-commit**
-(testato end-to-end), plug-and-play, plugin Claude Code, review queue, synthesis,
-scenario templates. **Aperto:** provare un reconcile LLM reale via `claude -p` da
-terminale (non annidabile in sessione) — vedi [`WEAKNESSES.md`](WEAKNESSES.md).
 
 ## Licenza
 
