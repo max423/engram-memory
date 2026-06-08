@@ -108,6 +108,68 @@ LOG_MD_TEMPLATE = """\
 """
 
 
+SCHEMA_RESEARCH = """\
+# schema.md — node and relation types (research / literature memory)
+
+> The 4 node types are fixed (the lint enforces them); only their meaning is
+> tuned for research. Co-evolve this file by hand.
+
+## Node types (`type:`)
+
+| type        | research meaning                                   | folder            |
+|-------------|----------------------------------------------------|-------------------|
+| `decision`  | a **finding/claim** you accept as true (with why)  | `wiki/decisions/` |
+| `concept`   | a theory, method, or recurring idea                | `wiki/concepts/`  |
+| `entity`    | a paper, author, dataset, or tool                  | `wiki/entities/`  |
+| `synthesis` | a literature review / cross-paper comparison       | `wiki/synthesis/` |
+
+## Frontmatter (required): id · type · status · title · tags · sources · created · updated
+
+`sources:` must point at the raw paper/note in `raw/` — anti-drift: a finding is
+only as good as the source it cites. Status machine + reconcile actions
+(no-op/update/add/contradiction/deprecate) work as in the default schema; a new
+paper that conflicts with a finding moves it to `contradicted`.
+
+## Relations (`[[slug]]`)
+
+A finding links the concepts/methods it relies on and the papers it draws from.
+A synthesis links every paper and finding it compares.
+"""
+
+SCHEMA_PRODUCT = """\
+# schema.md — node and relation types (product memory)
+
+> The 4 node types are fixed (the lint enforces them); only their meaning is
+> tuned for product work. Co-evolve this file by hand.
+
+## Node types (`type:`)
+
+| type        | product meaning                                     | folder            |
+|-------------|-----------------------------------------------------|-------------------|
+| `decision`  | a **product/roadmap decision** (with rationale)     | `wiki/decisions/` |
+| `concept`   | a user need, principle, or guideline                | `wiki/concepts/`  |
+| `entity`    | a feature, competitor, segment, or metric           | `wiki/entities/`  |
+| `synthesis` | a PRD, strategy doc, or release overview            | `wiki/synthesis/` |
+
+## Frontmatter (required): id · type · status · title · tags · sources · created · updated
+
+`sources:` must point at the raw input in `raw/` (user interview, ticket, memo).
+Status machine + reconcile actions work as in the default schema; a decision the
+team reverses moves to `contradicted` or `archived`.
+
+## Relations (`[[slug]]`)
+
+A decision links the user needs it serves and the features/segments it touches.
+A synthesis links every decision and entity it rolls up.
+"""
+
+SCHEMA_TEMPLATES = {
+    "software": SCHEMA_TEMPLATE,
+    "research": SCHEMA_RESEARCH,
+    "product": SCHEMA_PRODUCT,
+}
+
+
 def cmd_init(args) -> int:
     root = Path(args.root).resolve()
     mem = MemoryPaths(root / ".memory" if root.name != ".memory" else root)
@@ -132,7 +194,8 @@ def cmd_init(args) -> int:
             p.write_text(content, encoding="utf-8")
             created.append(str(p.relative_to(root.parent)))
 
-    ensure_file(mem.schema, SCHEMA_TEMPLATE)
+    ensure_file(mem.schema, SCHEMA_TEMPLATES.get(getattr(args, "template", "software"),
+                                                 SCHEMA_TEMPLATE))
     ensure_file(mem.index_md, INDEX_MD_TEMPLATE)
     ensure_file(mem.log, LOG_MD_TEMPLATE)
     ensure_file(mem.index_dir / ".gitignore", "# generated, regenerable by `mem index`\n*.json\n*.idx\nsources.sha256\n")
@@ -647,6 +710,8 @@ def main() -> int:
 
     p = sub.add_parser("init", help="Bootstrap a .memory/ layout.")
     p.add_argument("root", nargs="?", default=".", help="Project root (default: .).")
+    p.add_argument("--template", default="software", choices=list(SCHEMA_TEMPLATES),
+                   help="Domain schema preset (default: software).")
     p.set_defaults(func=cmd_init)
 
     def add_memory(pp):

@@ -561,6 +561,14 @@ class TestCliEndToEnd(unittest.TestCase):
             idx = json.loads((Path(d) / ".memory" / "index" / "index.json").read_text())
             self.assertEqual(idx[0]["slug"], "cache-redis")
 
+    def test_init_template_research(self):
+        with tempfile.TemporaryDirectory() as d:
+            r = self._run("init", ".", "--template", "research", cwd=d)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            schema = (Path(d) / ".memory" / "schema.md").read_text()
+            self.assertIn("research", schema.lower())
+            self.assertIn("paper", schema.lower())   # research-specific entity
+
     def test_lint_catches_bad_page(self):
         with tempfile.TemporaryDirectory() as d:
             self._run("init", ".", cwd=d)
