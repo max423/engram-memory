@@ -214,6 +214,61 @@ class TestChangeDetect(unittest.TestCase):
         self.assertIn("sources", cands[0]["reasons"])
 
 
+class TestRanking(unittest.TestCase):
+    def test_adamic_adar_prefers_rare_common_neighbours(self):
+        from memlib import ranking
+        # hub h links many; rare r links few. cand shares r with seed -> high AA.
+        g = graph.build_graph([
+            {"slug": "seed", "type": "decision", "title": "s", "links": ["h", "r"]},
+            {"slug": "cand", "type": "decision", "title": "c", "links": ["h", "r"]},
+            {"slug": "noise", "type": "decision", "title": "n", "links": ["h"]},
+            {"slug": "h", "type": "concept", "title": "h", "links": []},
+            {"slug": "r", "type": "concept", "title": "r", "links": []},
+        ])
+        scores = ranking.adamic_adar_scores(g, ["seed"])
+        self.assertIn("cand", scores)
+        # cand (shares rare r + hub h) scores higher than noise (shares only hub h)
+        self.assertGreater(scores["cand"], scores.get("noise", 0))
+
+    def test_source_overlap(self):
+        from memlib import ranking
+        pages = [
+            {"slug": "seed", "sources": ["raw/a.md", "raw/shared.md"]},
+            {"slug": "cand", "sources": ["raw/shared.md"]},
+            {"slug": "other", "sources": ["raw/z.md"]},
+        ]
+        scores = ranking.source_overlap_scores(pages, ["seed"], exclude_source="raw/a.md")
+        self.assertEqual(scores.get("cand"), 1)
+        self.assertNotIn("other", scores)
+
+    def test_select_candidates_uses_new_signals(self):
+        # A page tied to the seed only via shared source + graph (no bm25 overlap)
+        # still surfaces, tagged with the new reasons.
+        pages = [
+            {"slug": "cited", "rel_path": "decisions/cited.md", "type": "decision",
+             "title": "Cited", "sources": ["raw/s.md", "raw/common.md"],
+             "links": ["sibling"], "tokens": pages_tokens("alpha")},
+            {"slug": "sibling", "rel_path": "decisions/sibling.md", "type": "decision",
+             "title": "Sibling", "sources": ["raw/common.md"],
+             "links": ["cited"], "tokens": pages_tokens("beta")},
+            {"slug": "far", "rel_path": "decisions/far.md", "type": "decision",
+             "title": "Far", "sources": ["raw/z.md"], "links": [],
+             "tokens": pages_tokens("gamma")},
+        ]
+        idx = bm25.BM25.build(pages)
+        g = graph.build_graph(pages)
+        cands = change_detect.select_candidates("raw/s.md", "alpha", pages, idx, g, limit=8)
+        slugs = [c["slug"] for c in cands]
+        self.assertEqual(slugs[0], "cited")               # direct citation wins
+        sibling = next(c for c in cands if c["slug"] == "sibling")
+        self.assertTrue({"overlap", "graph"} & set(sibling["reasons"]))
+        self.assertNotIn("far", slugs)                    # unrelated stays out
+
+
+def pages_tokens(text):
+    return pages.tokenize(text)
+
+
 class TestReconcilePlumbing(unittest.TestCase):
     def _mem(self, d):
         m = MemoryPaths(Path(d) / ".memory")

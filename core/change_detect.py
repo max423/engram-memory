@@ -36,6 +36,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from memlib import ranking  # noqa: E402
 from memlib.bm25 import BM25  # noqa: E402
 from memlib.graph import build_graph, neighbors  # noqa: E402
 from memlib.pages import collect_pages, tokenize  # noqa: E402
@@ -118,33 +119,50 @@ def detect_changes(current: dict, snapshot: dict, git_filter: set | None) -> lis
 
 def select_candidates(source_rel: str, source_text: str, pages: list[dict],
                       bm25: BM25, graph: dict, limit: int) -> list[dict]:
-    """Three-signal candidate selection for one source. Deterministic."""
-    chosen: dict = {}  # slug -> {slug, rel_path, reasons:set, score}
+    """Multi-signal candidate selection for one source. Deterministic, additive.
 
-    def add(slug, reason, score=0.0):
-        page = next((p for p in pages if p["slug"] == slug), None)
+    Signals (scores accumulate, so a page hit by several outranks single-signal):
+      sources (100) · BM25 (lexical) · graph 1-hop (1) · source-overlap (3·shared)
+      · Adamic-Adar (2·aa). A direct citation always sorts first.
+    """
+    chosen: dict = {}  # slug -> {slug, rel_path, reasons:set, score}
+    by_slug = {p["slug"]: p for p in pages}
+
+    def add(slug, reason, score):
+        page = by_slug.get(slug)
         if not page:
             return
         entry = chosen.setdefault(slug, {
             "slug": slug, "rel_path": page["rel_path"], "reasons": set(), "score": 0.0,
         })
         entry["reasons"].add(reason)
-        entry["score"] = max(entry["score"], score)
+        entry["score"] += score            # additive across signals
 
     # (a) sources: pages that already cite this raw file — strongest signal.
-    for p in pages:
-        if source_rel in p.get("sources", []):
-            add(p["slug"], "sources", score=100.0)
+    cited = [p["slug"] for p in pages if source_rel in p.get("sources", [])]
+    for slug in cited:
+        add(slug, "sources", 100.0)
 
     # (b) BM25: pages lexically closest to the source content.
-    if source_text.strip():
-        for slug, score in bm25.search(source_text, top=limit):
-            add(slug, "bm25", score=score)
+    bm_hits = bm25.search(source_text, top=limit) if source_text.strip() else []
+    for slug, score in bm_hits:
+        add(slug, "bm25", score)
 
-    # (c) graph: 1-hop neighbours of everything chosen so far.
-    for slug in list(chosen.keys()):
+    # Seed set for the graph signals: the cited pages, else the top BM25 hits.
+    seeds = set(cited) or {s for s, _ in bm_hits[:3]}
+
+    # (c) graph: 1-hop neighbours of the seeds.
+    for slug in seeds:
         for nb in neighbors(graph, slug):
-            add(nb, "graph")
+            add(nb, "graph", 1.0)
+
+    # (d) source-overlap: pages sharing other raw sources with the seeds.
+    for slug, shared in ranking.source_overlap_scores(pages, seeds, source_rel).items():
+        add(slug, "overlap", 3.0 * shared)
+
+    # (e) Adamic-Adar: graph proximity to the seeds via rare common neighbours.
+    for slug, aa in ranking.adamic_adar_scores(graph, seeds).items():
+        add(slug, "adamic-adar", 2.0 * aa)
 
     ranked = sorted(
         chosen.values(),
