@@ -64,6 +64,18 @@ class TestPages(unittest.TestCase):
         body = "Real [[alpha]] link.\n\n`code [[notalink]]`\n\n```\n[[alsonot]]\n```\n"
         self.assertEqual(pages.extract_wikilinks(body), ["alpha"])
 
+    def test_tokenize_normalization(self):
+        # IT/EN inflections unify (symmetric: docs and queries use this)
+        self.assertEqual(pages.tokenize("fonti"), pages.tokenize("fonte"))
+        self.assertEqual(pages.tokenize("decisioni"), ["decisione"])
+        self.assertEqual(pages.tokenize("files"), pages.tokenize("file"))
+        self.assertEqual(pages.tokenize("flags"), ["flag"])
+        # stopwords + single chars dropped
+        self.assertEqual(pages.tokenize("il the di of a e"), [])
+        # short / technical words preserved (not over-stemmed)
+        self.assertEqual(pages.tokenize("git repo class press"),
+                         ["git", "repo", "class", "press"])
+
     def test_collect(self):
         with tempfile.TemporaryDirectory() as d:
             w = Path(d) / "wiki" / "decisions"

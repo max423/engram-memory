@@ -22,9 +22,49 @@ _INLINE_CODE_RE = re.compile(r"`[^`]*`")
 VALID_TYPES = {"decision", "concept", "entity", "synthesis"}
 VALID_STATUS = {"draft", "active", "stale", "contradicted", "archived"}
 
+# Small IT+EN stopword list — high-frequency words that carry no retrieval
+# signal. Removing them is a clear, low-risk recall win.
+STOPWORDS = {
+    # English
+    "the", "a", "an", "of", "in", "on", "to", "and", "or", "is", "are", "be",
+    "for", "with", "without", "as", "at", "by", "it", "this", "that", "we",
+    "you", "not", "no", "if", "so", "but", "from", "can", "will", "do", "does",
+    # Italian
+    "il", "lo", "la", "le", "i", "gli", "un", "una", "uno", "di", "del", "della",
+    "dei", "delle", "dello", "e", "o", "ed", "od", "che", "non", "per", "con",
+    "su", "tra", "fra", "come", "se", "ma", "al", "alla", "ai", "alle", "dal",
+    "dalla", "nel", "nella", "sul", "sulla", "si", "ci", "quando", "ogni", "una",
+    "anche", "più", "meno", "già", "solo", "sono", "essere", "viene", "fa",
+}
+
+# Ordered suffixes for a light, symmetric stemmer (applied to docs AND queries).
+# "es" is intentionally absent — it turned "files" into "fil"; plural-s handles it.
+_SUFFIXES = ("azioni", "azione", "zioni", "zione", "mente", "ing", "ed")
+
+
+def _stem(w: str) -> str:
+    """Conservative stemmer: unify common IT/EN inflections, length-guarded so
+    short words (git, repo, file) stay intact. Deliberately does NOT strip lone
+    romance vowels — that over-collapses unrelated words on small corpora and
+    measured worse on the eval. Suffixes + IT plural-i + plural-s are the safe win:
+    fonti->fonte, decisioni->decisione, files->file, flags->flag."""
+    for suf in _SUFFIXES:
+        if w.endswith(suf) and len(w) - len(suf) >= 3:
+            return w[:-len(suf)]
+    if len(w) >= 5 and w.endswith("i") and not w.endswith("ii"):
+        return w[:-1] + "e"   # IT plural: fonti->fonte, decisioni->decisione
+    if len(w) >= 5 and w.endswith("s") and not w.endswith("ss"):
+        return w[:-1]         # EN plural: files->file, flags->flag
+    return w
+
 
 def tokenize(text: str) -> list[str]:
-    return TOKEN_RE.findall(text.lower())
+    out = []
+    for tok in TOKEN_RE.findall(text.lower()):
+        if tok in STOPWORDS or len(tok) == 1:
+            continue
+        out.append(_stem(tok))
+    return out
 
 
 def strip_code(md: str) -> str:
