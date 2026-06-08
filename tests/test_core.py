@@ -1,0 +1,247 @@
+#!/usr/bin/env python3
+"""Test suite for the deterministic core. Stdlib unittest, zero dependencies.
+
+Run:  python3 -m unittest discover -s tests
+ or:  python3 tests/run.py
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+CORE = Path(__file__).resolve().parent.parent / "core"
+sys.path.insert(0, str(CORE))
+
+import change_detect  # noqa: E402
+import reconcile  # noqa: E402
+from memlib import bm25, compile as compile_mod, frontmatter, graph, pages  # noqa: E402
+from memlib.store import MemoryPaths  # noqa: E402
+
+
+def make_page(meta_extra=None, body="# T\n\nText.\n"):
+    meta = {"id": "x", "type": "decision", "status": "active", "title": "T",
+            "tags": ["a"], "sources": ["raw/x.md"], "created": "2026-01-01",
+            "updated": "2026-01-01"}
+    if meta_extra:
+        meta.update(meta_extra)
+    return frontmatter.with_frontmatter(meta, body)
+
+
+class TestFrontmatter(unittest.TestCase):
+    def test_inline_and_block_lists(self):
+        text = make_page({"tags": ["x", "y"]})
+        meta, body, malformed = frontmatter.parse(text)
+        self.assertFalse(malformed)
+        self.assertEqual(meta["tags"], ["x", "y"])
+        self.assertEqual(meta["sources"], ["raw/x.md"])
+        self.assertIn("Text.", body)
+
+    def test_round_trip(self):
+        meta = {"id": "a", "tags": ["one", "two"], "title": "Hello"}
+        reparsed, _, _ = frontmatter.parse(frontmatter.dump(meta) + "\nbody\n")
+        self.assertEqual(reparsed["tags"], ["one", "two"])
+        self.assertEqual(reparsed["id"], "a")
+        self.assertEqual(reparsed["title"], "Hello")
+
+    def test_malformed_flag(self):
+        _, _, malformed = frontmatter.parse("---\nnot closed\n")
+        self.assertTrue(malformed)
+
+    def test_no_frontmatter(self):
+        meta, body, malformed = frontmatter.parse("# just a body\n")
+        self.assertEqual(meta, {})
+        self.assertFalse(malformed)
+
+
+class TestPages(unittest.TestCase):
+    def test_wikilinks_ignore_code(self):
+        body = "Real [[alpha]] link.\n\n`code [[notalink]]`\n\n```\n[[alsonot]]\n```\n"
+        self.assertEqual(pages.extract_wikilinks(body), ["alpha"])
+
+    def test_collect(self):
+        with tempfile.TemporaryDirectory() as d:
+            w = Path(d) / "wiki" / "decisions"
+            w.mkdir(parents=True)
+            (w / "a.md").write_text(make_page({"id": "a"}, "# A\n\nLink [[b]].\n"))
+            (w / "b.md").write_text(make_page({"id": "b"}))
+            ps = pages.collect_pages(Path(d) / "wiki")
+            self.assertEqual({p["slug"] for p in ps}, {"a", "b"})
+            a = pages.find_by_slug(ps, "a")
+            self.assertEqual(a["links"], ["b"])
+
+
+class TestBM25(unittest.TestCase):
+    def _pages(self):
+        return [
+            {"slug": "git", "tokens": pages.tokenize("storage markdown git repo version")},
+            {"slug": "bm25", "tokens": pages.tokenize("bm25 search lexical ranking tokens")},
+        ]
+
+    def test_ranking(self):
+        idx = bm25.BM25.build(self._pages())
+        hits = idx.search("git storage", top=2)
+        self.assertEqual(hits[0][0], "git")
+        self.assertGreater(hits[0][1], 0)
+
+    def test_empty_query(self):
+        self.assertEqual(bm25.BM25.build(self._pages()).search(""), [])
+
+    def test_persist_round_trip(self):
+        idx = bm25.BM25.build(self._pages())
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "bm25.idx"
+            idx.save(p)
+            loaded = bm25.BM25.load(p)
+        self.assertEqual(loaded.search("bm25 search")[0][0], "bm25")
+
+
+class TestGraph(unittest.TestCase):
+    def test_backlinks_orphans_broken(self):
+        ps = [
+            {"slug": "a", "type": "decision", "title": "A", "links": ["b", "ghost"]},
+            {"slug": "b", "type": "concept", "title": "B", "links": []},
+        ]
+        g = graph.build_graph(ps)
+        self.assertEqual(g["backlinks"]["b"], ["a"])
+        self.assertEqual(g["orphans"], ["a"])           # nothing links to a
+        self.assertEqual(g["broken_links"], [{"from": "a", "to": "ghost"}])
+        self.assertIn("b", graph.neighbors(g, "a"))
+
+
+class TestCompile(unittest.TestCase):
+    RAW = ("# Decisione: storage in git\n\nData: 2026-03-04\n\n"
+           "Scelta: **markdown nel repo, niente database.**\n\n"
+           "- pagine atomiche\n- diff piccoli\n")
+
+    def test_slug_and_date(self):
+        slug, created = compile_mod.slug_and_date(Path("2026-03-04-storage-in-git.md"))
+        self.assertEqual(slug, "storage-in-git")
+        self.assertEqual(created, "2026-03-04")
+
+    def test_offline_produces_valid_page(self):
+        page = compile_mod.compile_offline("raw/2026-03-04-storage-in-git.md", self.RAW)
+        meta, body, malformed = frontmatter.parse(page["text"])
+        self.assertFalse(malformed)
+        self.assertEqual(meta["type"], "decision")
+        self.assertEqual(meta["status"], "draft")
+        self.assertEqual(meta["sources"], ["raw/2026-03-04-storage-in-git.md"])
+        self.assertEqual(meta["created"], "2026-03-04")
+        self.assertTrue(meta["tags"])
+        # The summary is the explicit choice; no self-inflicted broken wikilink.
+        self.assertIn("markdown nel repo", body)
+        self.assertEqual(pages.extract_wikilinks(body), [])
+
+    def test_llm_backend_is_stub(self):
+        with self.assertRaises(NotImplementedError):
+            compile_mod.compile_llm("raw/x.md", "x", "", [])
+
+
+class TestChangeDetect(unittest.TestCase):
+    def test_detect_new_changed_removed(self):
+        snapshot = {"raw/a.md": "h1", "raw/b.md": "h2"}
+        current = {"raw/a.md": "h1", "raw/b.md": "CHANGED", "raw/c.md": "h3"}
+        changes = change_detect.detect_changes(current, snapshot, None)
+        by = {c["source"]: c["status"] for c in changes}
+        self.assertEqual(by, {"raw/b.md": "changed", "raw/c.md": "new"})
+
+        snapshot2 = {"raw/a.md": "h1"}
+        changes2 = change_detect.detect_changes({}, snapshot2, None)
+        self.assertEqual(changes2[0]["status"], "removed")
+
+    def test_sources_signal_wins(self):
+        ps = [
+            {"slug": "cited", "rel_path": "decisions/cited.md", "type": "decision",
+             "title": "Cited", "tags": [], "sources": ["raw/s.md"],
+             "links": [], "tokens": pages.tokenize("unrelated words here")},
+            {"slug": "lexical", "rel_path": "decisions/lexical.md", "type": "decision",
+             "title": "Lexical", "tags": [], "sources": [],
+             "links": [], "tokens": pages.tokenize("storage git markdown repo")},
+        ]
+        idx = bm25.BM25.build(ps)
+        g = graph.build_graph(ps)
+        cands = change_detect.select_candidates(
+            "raw/s.md", "storage git markdown repo", ps, idx, g, limit=8)
+        self.assertEqual(cands[0]["slug"], "cited")
+        self.assertIn("sources", cands[0]["reasons"])
+
+
+class TestReconcilePlumbing(unittest.TestCase):
+    def _mem(self, d):
+        m = MemoryPaths(Path(d) / ".memory")
+        (m.wiki / "decisions").mkdir(parents=True)
+        m.log.write_text("# log\n")
+        return m
+
+    def test_apply_patch_ok_missing_ambiguous(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "p.md"
+            p.write_text("alpha beta gamma")
+            self.assertTrue(reconcile.apply_patch(p, "beta", "BETA"))
+            self.assertEqual(p.read_text(), "alpha BETA gamma")
+            self.assertFalse(reconcile.apply_patch(p, "nope", "x"))
+            p.write_text("dup dup")
+            with self.assertRaises(ValueError):
+                reconcile.apply_patch(p, "dup", "x")
+
+    def test_set_status_and_log(self):
+        with tempfile.TemporaryDirectory() as d:
+            m = self._mem(d)
+            page = m.wiki / "decisions" / "a.md"
+            page.write_text(make_page({"id": "a", "status": "active"}))
+            reconcile.set_status(page, "contradicted")
+            meta, _, _ = frontmatter.parse(page.read_text())
+            self.assertEqual(meta["status"], "contradicted")
+            reconcile.append_log(m, "contradiction", "a", "because reasons")
+            self.assertIn("## [", m.log.read_text())
+            self.assertIn("contradiction | a", m.log.read_text())
+
+    def test_estimate_tokens_bounded(self):
+        ctx = {"schema": "x" * 400, "source_text": "y" * 400,
+               "candidate_pages": [{"text": "z" * 400}]}
+        self.assertEqual(reconcile.estimate_tokens(ctx), 300)  # 1200 chars / 4
+
+
+class TestCliEndToEnd(unittest.TestCase):
+    def _run(self, *args, cwd):
+        return subprocess.run([sys.executable, str(CORE / "mem.py"), *args],
+                              cwd=cwd, capture_output=True, text=True)
+
+    def test_init_ingest_lint(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._run("init", ".", cwd=d)
+            raw = Path(d) / ".memory" / "raw" / "2026-04-01-cache-redis.md"
+            raw.write_text("# Decisione: cache con Redis\n\n"
+                           "Scelta: **usare Redis come cache condivisa.**\n\n"
+                           "- bassa latenza\n- TTL nativo\n")
+            r = self._run("ingest", "--memory", ".memory", cwd=d)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            page = Path(d) / ".memory" / "wiki" / "decisions" / "cache-redis.md"
+            self.assertTrue(page.exists())
+            meta, _, _ = frontmatter.parse(page.read_text())
+            self.assertEqual(meta["sources"], ["raw/2026-04-01-cache-redis.md"])
+            # detect is now clean (snapshot updated by ingest)
+            r2 = self._run("detect", "--memory", ".memory", cwd=d)
+            self.assertIn("Nothing to reconcile", r2.stdout)
+            # index.json exists and has the page
+            idx = json.loads((Path(d) / ".memory" / "index" / "index.json").read_text())
+            self.assertEqual(idx[0]["slug"], "cache-redis")
+
+    def test_lint_catches_bad_page(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._run("init", ".", cwd=d)
+            bad = Path(d) / ".memory" / "wiki" / "decisions" / "bad.md"
+            bad.write_text("---\nid: bad\ntype: nope\nstatus: active\n---\n# Bad\n[[ghost]]\n")
+            r = self._run("lint", "--memory", ".memory", cwd=d)
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("no source", r.stdout)
+            self.assertIn("Invalid type", r.stdout)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

@@ -186,6 +186,32 @@ def _cited(source_rel: str, pages: list[dict]) -> bool:
     return any(source_rel in p.get("sources", []) for p in pages)
 
 
+def compute_plan(mem, since: str | None, max_candidates: int) -> dict:
+    """Phase 1 end to end: hashes -> changes -> candidate plan. Zero tokens."""
+    current = current_source_hashes(mem.raw)
+    snapshot = load_snapshot(mem.sources_sha)
+    git_filter = git_changed_under(mem.root.parent, since, mem.raw) if since else None
+    changes = detect_changes(current, snapshot, git_filter)
+    pages = collect_pages(mem.wiki)
+    return build_plan(mem, changes, pages, max_candidates)
+
+
+def print_plan(plan: dict) -> None:
+    if not plan["items"]:
+        print("No curated sources new or changed. Nothing to reconcile (0 tokens).")
+        return
+    print("Reconcile plan: %d changed source(s)\n" % plan["changes"])
+    for item in plan["items"]:
+        print("[%s] %s  -> %s" % (item["status"].upper(), item["source"], item["action_hint"]))
+        if not item["candidates"]:
+            print("    (no candidate pages)")
+        for c in item["candidates"]:
+            print("    - %-28s %-18s score=%.2f" % (
+                c["slug"], "(" + ",".join(c["reasons"]) + ")", c["score"]))
+        print()
+    print("Next: feed this plan to reconcile (Phase 2, the only LLM call).")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -206,32 +232,11 @@ def main() -> int:
         print("Snapshot updated: %d sources -> %s" % (len(current), mem.sources_sha))
         return 0
 
-    snapshot = load_snapshot(mem.sources_sha)
-    git_filter = None
-    if args.since:
-        git_filter = git_changed_under(mem.root.parent, args.since, mem.raw)
-
-    changes = detect_changes(current, snapshot, git_filter)
-    pages = collect_pages(mem.wiki)
-    plan = build_plan(mem, changes, pages, args.max_candidates)
-
+    plan = compute_plan(mem, args.since, args.max_candidates)
     if args.json:
         print(json.dumps(plan, indent=2))
-        return 0
-
-    if not changes:
-        print("No curated sources new or changed. Nothing to reconcile (0 tokens).")
-        return 0
-    print("Reconcile plan: %d changed source(s)\n" % plan["changes"])
-    for item in plan["items"]:
-        print("[%s] %s  -> %s" % (item["status"].upper(), item["source"], item["action_hint"]))
-        if not item["candidates"]:
-            print("    (no candidate pages)")
-        for c in item["candidates"]:
-            print("    - %-28s %-18s score=%.2f" % (
-                c["slug"], "(" + ",".join(c["reasons"]) + ")", c["score"]))
-        print()
-    print("Next: feed this plan to reconcile.py (Phase 2, the only LLM call).")
+    else:
+        print_plan(plan)
     return 0
 
 

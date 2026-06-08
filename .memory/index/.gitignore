@@ -1,0 +1,4 @@
+# generated, regenerable by `mem index`
+*.json
+*.idx
+sources.sha256

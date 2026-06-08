@@ -409,6 +409,144 @@ def cmd_graph(args) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# detect / reconcile (delegate to the Phase 1 / Phase 2 modules)
+# --------------------------------------------------------------------------- #
+def cmd_detect(args) -> int:
+    import change_detect
+    mem = resolve(args.memory)
+    if args.update_snapshot:
+        current = change_detect.current_source_hashes(mem.raw)
+        mem.index_dir.mkdir(parents=True, exist_ok=True)
+        mem.sources_sha.write_text(json.dumps(current, indent=2), encoding="utf-8")
+        print("Snapshot updated: %d sources -> %s" % (len(current), mem.sources_sha))
+        return 0
+    plan = change_detect.compute_plan(mem, args.since, args.max_candidates)
+    if args.json:
+        print(json.dumps(plan, indent=2))
+    else:
+        change_detect.print_plan(plan)
+    return 0
+
+
+def cmd_reconcile(args) -> int:
+    import reconcile
+    mem = resolve(args.memory)
+    return reconcile.run_reconcile(mem, args.since, args.max_candidates,
+                                   args.show_context, args.apply)
+
+
+# --------------------------------------------------------------------------- #
+# ingest — compile NEW curated sources into draft pages (offline by default)
+# --------------------------------------------------------------------------- #
+TYPE_DIR = {"decision": "decisions", "concept": "concepts",
+            "entity": "entities", "synthesis": "synthesis"}
+
+
+def _catalogue_insert(mem: MemoryPaths, page_type: str, slug: str, summary: str) -> None:
+    """Best-effort: add a one-line entry to index.md under the type's heading."""
+    if not mem.index_md.exists():
+        return
+    heading = "## " + TYPE_DIR.get(page_type, page_type)
+    line = "- [[%s]] — %s" % (slug, summary)
+    text = mem.index_md.read_text(encoding="utf-8")
+    if "[[%s]]" % slug in text:
+        return
+    out, inserted = [], False
+    for ln in text.splitlines():
+        out.append(ln)
+        if not inserted and ln.strip() == heading:
+            out.append(line)
+            inserted = True
+    if not inserted:
+        out += ["", heading, line]
+    mem.index_md.write_text("\n".join(out) + "\n", encoding="utf-8")
+
+
+def cmd_ingest(args) -> int:
+    import change_detect
+    import reconcile
+    from memlib import compile as compile_mod
+
+    mem = resolve(args.memory)
+    if not mem.exists():
+        print("No wiki found at %s. Run `mem init` first." % mem.wiki, file=sys.stderr)
+        return 1
+    if args.backend == "llm":
+        print("backend=llm is the synthesis stub (no API wired). Use --backend offline.",
+              file=sys.stderr)
+        return 2
+
+    plan = change_detect.compute_plan(mem, args.since, args.max_candidates)
+    new_items = [it for it in plan["items"] if it["action_hint"] == "compile"]
+    changed = [it for it in plan["items"] if it["action_hint"] == "reconcile"]
+
+    if not new_items and not changed:
+        print("No new curated sources to ingest (0 tokens).")
+        return 0
+
+    written = []
+    for it in new_items:
+        if args.only and it["source"] != args.only:
+            continue
+        text = (mem.root / it["source"]).read_text(encoding="utf-8")
+        page = compile_mod.compile_offline(it["source"], text, args.type)
+        target = mem.wiki / TYPE_DIR[args.type] / (page["slug"] + ".md")
+        if target.exists() and not args.force:
+            print("  = %s (exists; --force to overwrite)" % target.relative_to(mem.root))
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(page["text"], encoding="utf-8")
+        summary = compile_mod.extract_summary(text)
+        _catalogue_insert(mem, args.type, page["slug"], summary)
+        reconcile.append_log(mem, "ingest", page["slug"],
+                             "source: %s -> %s (offline draft)"
+                             % (it["source"], target.relative_to(mem.root)))
+        written.append(page["slug"])
+        print("  + %s  [draft]" % target.relative_to(mem.root))
+
+    if changed and not args.only:
+        print("\n%d changed/cited source(s) need the LLM reconcile (Phase 2 stub):"
+              % len(changed))
+        for it in changed:
+            print("    ~ %s" % it["source"])
+
+    # Refresh deterministic artifacts and the snapshot for what we processed.
+    cmd_index(argparse.Namespace(memory=args.memory))
+    change_detect.current_source_hashes(mem.raw)  # warm
+    snap = change_detect.current_source_hashes(mem.raw)
+    mem.sources_sha.write_text(json.dumps(snap, indent=2), encoding="utf-8")
+
+    print("\nIngested %d page(s) as drafts. Refine them, then `mem lint`." % len(written))
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# install-hooks — wire the merge hook into .git/hooks (plug-and-play)
+# --------------------------------------------------------------------------- #
+def cmd_install_hooks(args) -> int:
+    repo = Path(args.repo).resolve()
+    git_dir = repo / ".git"
+    if not git_dir.is_dir():
+        print("Not a git repo: %s (run `git init` first)." % repo, file=sys.stderr)
+        return 1
+    src = Path(__file__).resolve().parent.parent / "hooks" / "post-merge"
+    if not src.exists():
+        print("Hook source missing: %s" % src, file=sys.stderr)
+        return 1
+    dst = git_dir / "hooks" / "post-merge"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.exists() and not args.force:
+        print("%s already exists (use --force)." % dst, file=sys.stderr)
+        return 1
+    dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+    dst.chmod(0o755)
+    print("Installed post-merge hook -> %s" % dst)
+    print("It runs Phase 1 on merge to '%s' (override with MEM_CANONICAL_BRANCH)."
+          % os.environ.get("MEM_CANONICAL_BRANCH", "main"))
+    return 0
+
+
+# --------------------------------------------------------------------------- #
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="mem", description=__doc__,
@@ -450,6 +588,38 @@ def main() -> int:
     add_memory(p)
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_graph)
+
+    p = sub.add_parser("detect", help="Phase 1: which curated sources changed (0 tokens).")
+    add_memory(p)
+    p.add_argument("--since", help="Restrict to raw files changed since this git ref.")
+    p.add_argument("--max-candidates", type=int, default=8)
+    p.add_argument("--update-snapshot", action="store_true",
+                   help="Record current source hashes as processed and exit.")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_detect)
+
+    p = sub.add_parser("reconcile", help="Phase 2: assemble minimal LLM context (stub).")
+    add_memory(p)
+    p.add_argument("--since")
+    p.add_argument("--max-candidates", type=int, default=8)
+    p.add_argument("--show-context", action="store_true")
+    p.add_argument("--apply", action="store_true")
+    p.set_defaults(func=cmd_reconcile)
+
+    p = sub.add_parser("ingest", help="Compile NEW curated sources into draft pages (offline).")
+    add_memory(p)
+    p.add_argument("--since")
+    p.add_argument("--max-candidates", type=int, default=8)
+    p.add_argument("--type", default="decision", choices=list(TYPE_DIR))
+    p.add_argument("--backend", default="offline", choices=["offline", "llm"])
+    p.add_argument("--only", help="Ingest only this raw source (rel path).")
+    p.add_argument("--force", action="store_true")
+    p.set_defaults(func=cmd_ingest)
+
+    p = sub.add_parser("install-hooks", help="Install the git merge hook (plug-and-play).")
+    p.add_argument("repo", nargs="?", default=".", help="Repo root (default: .).")
+    p.add_argument("--force", action="store_true")
+    p.set_defaults(func=cmd_install_hooks)
 
     args = parser.parse_args()
     if not getattr(args, "func", None):

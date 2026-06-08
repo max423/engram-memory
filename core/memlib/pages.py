@@ -16,6 +16,8 @@ from .store import NON_PAGE_DIRS, NON_PAGE_FILES
 
 WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|[^\]]+)?\]\]")
 TOKEN_RE = re.compile(r"[a-z0-9]+")
+_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
+_INLINE_CODE_RE = re.compile(r"`[^`]*`")
 
 VALID_TYPES = {"decision", "concept", "entity", "synthesis"}
 VALID_STATUS = {"draft", "active", "stale", "contradicted", "archived"}
@@ -25,8 +27,14 @@ def tokenize(text: str) -> list[str]:
     return TOKEN_RE.findall(text.lower())
 
 
+def strip_code(md: str) -> str:
+    """Remove fenced and inline code so we never parse links/structure inside it."""
+    return _INLINE_CODE_RE.sub(" ", _FENCE_RE.sub(" ", md))
+
+
 def extract_wikilinks(body: str) -> list[str]:
-    return [m.group(1).strip() for m in WIKILINK_RE.finditer(body)]
+    """Wikilinks in real prose only — links inside code spans are not edges."""
+    return [m.group(1).strip() for m in WIKILINK_RE.finditer(strip_code(body))]
 
 
 def _as_list(value) -> list[str]:

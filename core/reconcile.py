@@ -144,19 +144,17 @@ def main() -> int:
     ap.add_argument("--apply", action="store_true",
                     help="Actually run the (stubbed) LLM call and apply patches.")
     args = ap.parse_args()
-
     mem = resolve(args.memory)
+    return run_reconcile(mem, args.since, args.max_candidates,
+                         args.show_context, args.apply)
 
+
+def run_reconcile(mem, since, max_candidates, show_context=False, apply=False) -> int:
     # Phase 1 (deterministic, zero token) — reuse the change detector.
-    current = change_detect.current_source_hashes(mem.raw)
-    snapshot = change_detect.load_snapshot(mem.sources_sha)
-    git_filter = (change_detect.git_changed_under(mem.root.parent, args.since, mem.raw)
-                  if args.since else None)
-    changes = change_detect.detect_changes(current, snapshot, git_filter)
+    plan = change_detect.compute_plan(mem, since, max_candidates)
     pages = collect_pages(mem.wiki)
-    plan = change_detect.build_plan(mem, changes, pages, args.max_candidates)
 
-    if not changes:
+    if not plan["items"]:
         print("No curated sources new or changed. Nothing to reconcile (0 tokens).")
         return 0
 
@@ -170,9 +168,9 @@ def main() -> int:
             ", ".join(p["slug"] for p in ctx["candidate_pages"]) or "(none)"))
         print("    LLM context: ~%d tokens (schema + source + %d page(s))"
               % (tok, len(ctx["candidate_pages"])))
-        if args.show_context:
+        if show_context:
             _dump_context(ctx)
-        if args.apply:
+        if apply:
             try:
                 decisions = llm_reconcile(ctx)
                 _apply_decisions(mem, ctx, decisions)
@@ -184,8 +182,8 @@ def main() -> int:
     print("Total estimated LLM cost for this reconcile: ~%d tokens." % total_tokens)
     print("Context is bounded by --max-candidates (%d pages), not by wiki size "
           "(%d pages here, ~%d tokens of bodies): the cost scales with the "
-          "change, not the wiki." % (args.max_candidates, n_pages, _whole_wiki_tokens(mem)))
-    if not args.apply:
+          "change, not the wiki." % (max_candidates, n_pages, _whole_wiki_tokens(mem)))
+    if not apply:
         print("Dry run. Re-run with --apply once the Phase 2 LLM call is wired.")
     return 0
 

@@ -49,17 +49,23 @@ Comporre forkando il core e rubando pezzi:
 
 ## Stato attuale
 
-Scaffold eseguibile in piedi (vedi `README.md`). Funzionante e verificato:
-- **Core deterministico** `core/mem.py`: `init · index · search · lint · graph`.
-- **Fase 1 change-detect** `core/change_detect.py`: SHA-256 + 3 segnali (sources/
-  BM25/grafo), token zero.
-- Libreria condivisa `core/memlib/` (frontmatter · pages · bm25 · graph · store),
-  stdlib only.
-- `.memory/` di esempio: 3 decisioni + 1 concetto già compilati e collegati.
+MVP plug-and-play in piedi (vedi `README.md` e `WEAKNESSES.md`). Verificato con
+20 test (`tests/run.py`) e benchmark (`tests/bench.py`).
 
-Ancora STUB (il differenziatore, dove investire):
-- **Fase 2 reconcile** `core/reconcile.py`: plumbing reale (apply_patch, status
-  machine, log), manca solo la chiamata LLM.
+Funzionante:
+- **CLI unica** `core/mem.py`: `init · index · search · lint · graph · detect ·
+  reconcile · ingest · install-hooks`. Wrapper `bin/mem` + `install.sh`.
+- **Fase 1 change-detect** `core/change_detect.py`: SHA-256 + 3 segnali (sources/
+  BM25/grafo), token zero; località candidati costante (8) provata dal benchmark.
+- **Ingest offline** `core/memlib/compile.py`: backend deterministico (estrattivo)
+  che chiude il loop senza API key → pagine `draft`.
+- Libreria condivisa `core/memlib/` (frontmatter · pages · bm25 · graph · store ·
+  compile), stdlib only, Py 3.9+.
+- `.memory/` di esempio: 3 decisioni + 1 concetto, collegati e citati, lint pulito.
+
+Ancora STUB (il differenziatore, dove investire — vedi `WEAKNESSES.md`):
+- **Sintesi LLM** `compile_llm` e **Fase 2 reconcile** `llm_reconcile`: plumbing
+  reale e testato (apply_patch, status machine, log), manca solo la chiamata LLM.
 - **Hook al merge** `hooks/post-merge`: Fase 1 attiva, Fase 2 + auto-commit da fare.
 - **Plugin Claude Code** `plugin/`: comandi thin `/mem:ingest|query|lint`.
 

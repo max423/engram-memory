@@ -25,41 +25,67 @@ STORAGE (git)      → /.memory/ : raw/ · wiki/ · schema.md · index.md · log
 ### Layout del repo
 
 ```
+bin/mem             # wrapper: mette `mem` sul PATH (auto-discovery di .memory/)
+install.sh          # setup plug-and-play (link su PATH + init + hook + smoke test)
 core/
-  mem.py            # CLI deterministica: init · index · search · lint · graph
+  mem.py            # CLI unica: init · index · search · lint · graph · detect ·
+                    #            reconcile · ingest · install-hooks
   change_detect.py  # Fase 1 del reconcile: COSA toccare (SHA-256 + 3 segnali), 0 token
   reconcile.py      # Fase 2 del reconcile: COME modificare (STUB chiamata LLM)
   memlib/           # libreria condivisa, stdlib only
-    frontmatter.py · pages.py · bm25.py · graph.py · store.py
+    frontmatter.py · pages.py · bm25.py · graph.py · store.py · compile.py
 hooks/post-merge    # STUB: al merge su main, processa solo le fonti nuove e committa
 plugin/             # thin plugin Claude Code: /mem:ingest · /mem:query · /mem:lint
+tests/              # suite unittest (test_core.py) + benchmark (bench.py) + run.py
 .memory/            # la memoria di esempio (3 decisioni + 1 concetto già compilati)
   raw/  wiki/{decisions,concepts,entities,synthesis}/  schema.md  index.md  log.md
   index/            # artefatti generati (git-ignored): index.json · bm25.idx · graph.json
 ```
 
-## Provare lo scaffold (zero dipendenze, Python 3.9+)
-
-Tutta la parte deterministica gira subito sul `.memory/` di esempio:
+## Installazione plug-and-play (zero dipendenze, Python 3.9+)
 
 ```bash
-# 1. costruisci gli indici (index.json, bm25.idx, graph.json)
-python3 core/mem.py index
+./install.sh                 # mette `mem` su ~/.local/bin, esegue i test
+./install.sh /path/to/repo   # in più: crea .memory/ e installa l'hook lì
+```
 
-# 2. ricerca BM25 + filtri + backlink (token zero)
-python3 core/mem.py search "merge hook reconcile" --top 3
+Poi, in qualsiasi repo:
+
+```bash
+mem init .                   # crea .memory/
+# droppa una decisione in .memory/raw/, es. 2026-06-08-scelta.md
+mem ingest                   # compila le fonti nuove in pagine BOZZA (offline, 0 token)
+mem index && mem lint        # ricostruisci gli indici, controlla la salute
+mem search "i tuoi termini"  # ricerca BM25
+mem detect                   # cosa è cambiato dall'ultimo snapshot (0 token)
+mem install-hooks .          # aggancia l'hook al merge su main
+```
+
+Senza installare, ogni comando gira anche come `python3 core/mem.py <cmd>`.
+
+### Provare subito sul `.memory/` di esempio
+
+```bash
+python3 core/mem.py index                                  # index.json, bm25.idx, graph.json
+python3 core/mem.py search "merge hook reconcile" --top 3  # BM25 + filtri + backlink
 python3 core/mem.py search "ricerca" --type decision
 python3 core/mem.py search "" --backlinks storage-git-native
-
-# 3. salute strutturale + anti-drift (esce !=0 se trova problemi)
-python3 core/mem.py lint
-
-# 4. grafo dei wikilink (hub, orfani, link rotti)
-python3 core/mem.py graph
-
-# 5. bootstrap di una memoria nuova altrove (idempotente)
-python3 core/mem.py init /percorso/al/progetto
+python3 core/mem.py lint                                   # esce !=0 se trova problemi
+python3 core/mem.py graph                                  # hub, orfani, link rotti
 ```
+
+## Test e performance
+
+```bash
+python3 tests/run.py         # 20 test (unittest, zero dipendenze)
+python3 tests/bench.py       # benchmark su wiki da 50 → 2000 pagine
+```
+
+La suite copre frontmatter, pages/wikilink, BM25, grafo, compile offline,
+change-detect, il plumbing di reconcile e un end-to-end della CLI. Numeri di
+performance e limiti onesti in **[`WEAKNESSES.md`](WEAKNESSES.md)** — in sintesi:
+`search` resta ~9 ms a 2000 pagine e le pagine candidate restano **costanti (8)**
+a ogni scala (la garanzia di località dei token).
 
 ### Il cuore: il reconcile in due fasi
 
@@ -75,7 +101,7 @@ python3 core/change_detect.py                      # ora: nessun cambiamento →
 python3 core/change_detect.py                      # mostra il "reconcile plan"
 ```
 
-**Fase 2 — COME modificare (LLM, una chiamata, contesto minimo).** `reconcile.py`
+**Fase 2 — COME modificare (LLM, una chiamata, contesto minimo).** `reconcile`
 assembla il contesto minimo (schema + fonte + pagine candidate) e — qui è lo
 **stub** — chiamerebbe l'LLM per classificare ogni pagina come
 `no-op / update / add / contradiction / deprecate` e applicare patch chirurgiche.
@@ -83,15 +109,25 @@ Il plumbing deterministico (apply_patch `str_replace`, status machine, log) è g
 reale; manca solo la chiamata al modello.
 
 ```bash
-python3 core/reconcile.py            # dry-run: mostra contesto e stima token
-python3 core/reconcile.py --show-context
+mem reconcile                 # dry-run: mostra contesto e stima token
+mem reconcile --show-context
 ```
+
+### Compile offline (loop chiuso senza API key)
+
+`mem ingest` compila le fonti **nuove** in pagine bozza con un backend
+deterministico (estrattivo: titolo, scelta, punti chiave, `sources:` corretto,
+`status: draft`). Niente sintesi vera — quella è il backend LLM, dietro la stessa
+interfaccia (`memlib/compile.py`, `compile_llm` = stub). Così il sistema è
+plug-and-play offline: droppi un file, `mem ingest`, ottieni una bozza da rifinire.
 
 ## Stato
 
-- ✅ **Core deterministico** (`init/index/search/lint/graph`) — funzionante e verificato.
-- ✅ **Fase 1 change-detect** (`change_detect.py`) — funzionante, token zero.
-- 🔌 **Fase 2 reconcile** (`reconcile.py`) — plumbing reale, chiamata LLM = STUB con TODO.
+- ✅ **Core deterministico** (`init/index/search/lint/graph/detect`) — funzionante e verificato (20 test).
+- ✅ **Fase 1 change-detect** — funzionante, token zero, località candidati provata dal benchmark.
+- ✅ **Ingest offline** (`mem ingest`) — loop chiuso senza API key (compile estrattivo → bozza).
+- ✅ **Plug-and-play** — `install.sh` + `mem` su PATH + `mem install-hooks`.
+- 🔌 **Sintesi LLM** (`compile_llm`) e **Fase 2 reconcile** (`llm_reconcile`) — plumbing reale, chiamata LLM = STUB con TODO.
 - 🔌 **Hook al merge** (`hooks/post-merge`) — Fase 1 attiva; Fase 2 + auto-commit = STUB.
 - 🔌 **Plugin Claude Code** (`/mem:ingest|query|lint`) — comandi thin che pilotano la CLI.
 
