@@ -689,7 +689,7 @@ class TestMergeHook(unittest.TestCase):
                    "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
                    "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
                    "MEM_BACKEND": "offline", "MEM_AUTORECONCILE": "1",
-                   "MEM_CANONICAL_BRANCH": "main"}
+                   "MEM_CANONICAL_BRANCH": "main", "MEM_POSTCOMMIT": "0"}
 
             def git(*a):
                 return subprocess.run(["git", "-C", str(d), *a],
@@ -887,6 +887,94 @@ class TestHubs(unittest.TestCase):
             self.assertIn("[[%s]]" % m, body)
 
 
+class TestTransparentMemory(unittest.TestCase):
+    """The autonomous layer: note (write), digest (read), session hook, post-commit."""
+
+    def _init(self, d):
+        mem_cli.cmd_init(argparse.Namespace(root=str(d), template="software"))
+
+    def test_note_writes_source_and_compiles(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d); self._init(d)
+            rc = mem_cli.cmd_note(argparse.Namespace(
+                memory=d / ".memory", text="Redis as cache, 5 min TTL",
+                title=None, raw_only=False))
+            self.assertEqual(rc, 0)
+            raws = list((d / ".memory" / "raw").glob("*.md"))
+            pages = list((d / ".memory" / "wiki" / "decisions").glob("*.md"))
+            self.assertTrue(raws and pages)
+            self.assertIn("Redis", pages[0].read_text(encoding="utf-8"))
+
+    def test_digest_has_context_and_catalogue(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d); self._init(d)
+            (d / "app.py").write_text('"""Entry."""\n', encoding="utf-8")
+            mem_cli.cmd_context(argparse.Namespace(
+                memory=d / ".memory", backend="offline", model=None))
+            mem_cli.cmd_note(argparse.Namespace(
+                memory=d / ".memory", text="Use Postgres", title=None, raw_only=False))
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                mem_cli.cmd_digest(argparse.Namespace(memory=d / ".memory", max_pages=40))
+            out = buf.getvalue()
+            self.assertIn("Context map", out)
+            self.assertIn("Decisions catalogue", out)
+
+    def test_session_hook_merge_is_nondestructive_and_idempotent(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / ".claude").mkdir()
+            (d / ".claude" / "settings.json").write_text(
+                json.dumps({"model": "opus", "hooks": {"SessionStart": [
+                    {"hooks": [{"type": "command", "command": "echo keep"}]}]}}),
+                encoding="utf-8")
+            mem_cli._wire_session_hook(d, Path("/core"))
+            data = json.loads((d / ".claude" / "settings.json").read_text(encoding="utf-8"))
+            self.assertEqual(data["model"], "opus")                    # preserved
+            cmds = [h["command"] for g in data["hooks"]["SessionStart"] for h in g["hooks"]]
+            self.assertIn("echo keep", cmds)                           # preserved
+            self.assertTrue(any("mem.py digest" in c for c in cmds))   # added
+            mem_cli._wire_session_hook(d, Path("/core"))               # twice → idempotent
+            data2 = json.loads((d / ".claude" / "settings.json").read_text(encoding="utf-8"))
+            cmds2 = [h["command"] for g in data2["hooks"]["SessionStart"] for h in g["hooks"]]
+            self.assertEqual(sum("mem.py digest" in c for c in cmds2), 1)
+
+    def test_post_commit_refreshes_and_does_not_loop(self):
+        if shutil.which("git") is None:
+            self.skipTest("git not available")
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+            env.update({"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"})
+
+            def git(*a):
+                return subprocess.run(["git", "-C", str(d), *a],
+                                      capture_output=True, text=True, env=env)
+
+            subprocess.run(["git", "init", "-b", "main", str(d)], capture_output=True, env=env)
+            self._init(d)
+            (d / "core").mkdir(exist_ok=True)
+            (d / "core" / "app.py").write_text('"""Core."""\n', encoding="utf-8")
+            r = subprocess.run([sys.executable, str(CORE / "mem.py"), "install-hooks", str(d)],
+                               cwd=str(d), capture_output=True, text=True, env=env)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertTrue((d / ".git" / "hooks" / "post-commit").exists())
+
+            git("add", "-A")
+            git("commit", "-m", "code")
+            log = git("log", "--oneline").stdout.strip().splitlines()
+            # exactly one [mem] auto-update follow-up, not an infinite loop
+            mem_commits = [l for l in log if "[mem] auto-update" in l]
+            self.assertEqual(len(mem_commits), 1, "\n".join(log))
+            self.assertTrue((d / ".memory" / "context.md").exists())
+            # a second, memory-irrelevant commit makes no new [mem] commit
+            (d / "notes.txt").write_text("hi\n", encoding="utf-8")
+            git("add", "-A"); git("commit", "-m", "notes")
+            log2 = git("log", "--oneline").stdout
+            self.assertEqual(log2.count("[mem] auto-update"), 1)
+
+
 class TestContext(unittest.TestCase):
     """Code-aligned big-picture map: deterministic scan + change-driven descriptions."""
 
@@ -980,7 +1068,8 @@ class TestMergeDriver(unittest.TestCase):
             env = {**os.environ,
                    "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
                    "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
-                   "MEM_AUTORECONCILE": "0", "MEM_CANONICAL_BRANCH": "main"}
+                   "MEM_AUTORECONCILE": "0", "MEM_CANONICAL_BRANCH": "main",
+                   "MEM_POSTCOMMIT": "0"}
 
             def git(*a):
                 return subprocess.run(["git", "-C", str(d), *a],

@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# post-commit — keep the memory aligned with the code on every commit.
+#
+# The user's choice: memory updates AT COMMIT (not only at merge), hybrid /
+# change-driven. This hook is cheap by default: the deterministic change-detect
+# is the gate (0 tokens); the LLM only runs if you opt in (MEM_BACKEND=llm) AND
+# you're not inside a Claude Code session (where `claude -p` can't nest — there,
+# the in-session assistant IS the LLM and consolidates the memory itself).
+#
+# `mem install-hooks` bakes the absolute CLI path into PYTHON/CORE below.
+set -euo pipefail
+
+PYTHON="__PYTHON__"
+CORE="__CORE__"
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+case "$PYTHON" in *__*) PYTHON="python3" ;; esac
+case "$CORE" in *__*) CORE="$REPO_ROOT/core" ;; esac
+run_mem() { "$PYTHON" "$CORE/mem.py" "$@"; }
+
+MEMORY="$REPO_ROOT/.memory"
+[ -d "$MEMORY" ] || exit 0
+[ "${MEM_POSTCOMMIT:-1}" = "1" ] || exit 0
+
+# --- Anti-loop guard (two layers) ---------------------------------------------
+# (1) env flag set when WE make the memory commit, inherited by its post-commit.
+[ "${MEM_SKIP_HOOK:-0}" = "1" ] && exit 0
+# (2) sentinel in the commit message, in case the env didn't propagate.
+SENTINEL="[mem] auto-update"
+case "$(git log -1 --pretty=%B 2>/dev/null || true)" in
+  *"$SENTINEL"*) exit 0 ;;
+esac
+
+# In a Claude Code session `claude -p` can't nest → stay deterministic (0 tokens).
+BACKEND="${MEM_BACKEND:-offline}"
+INSESSION=0
+if [ -n "${CLAUDECODE:-}" ]; then BACKEND="offline"; INSESSION=1; fi
+
+# --- Gate + refresh -----------------------------------------------------------
+# Refresh the code-aligned context map (change-driven; only changed modules).
+run_mem context --memory "$MEMORY" --backend "$BACKEND" >/dev/null 2>&1 || true
+
+# If curated raw/ sources changed in this commit, ingest them (offline default).
+if git rev-parse --verify -q HEAD~1 >/dev/null 2>&1; then
+  run_mem ingest --memory "$MEMORY" --since HEAD~1 --backend "$BACKEND" >/dev/null 2>&1 || true
+fi
+run_mem index --memory "$MEMORY" >/dev/null 2>&1 || true
+
+# --- Auto-commit the memory update (guarded against re-trigger) ---------------
+git add -- "$MEMORY/context.md" "$MEMORY/wiki" "$MEMORY/index.md" "$MEMORY/log.md" 2>/dev/null || true
+if git diff --cached --quiet; then
+  exit 0
+fi
+MEM_SKIP_HOOK=1 git commit -m "$SENTINEL: memory after $(git rev-parse --short HEAD)" >/dev/null 2>&1 || true
+if [ "$INSESSION" = "1" ]; then
+  echo "[mem] context/memory refreshed deterministically (in-session: LLM enrichment is up to the assistant)."
+fi
+exit 0

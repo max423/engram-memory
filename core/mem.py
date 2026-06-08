@@ -639,6 +639,66 @@ def cmd_hubs(args) -> int:
     return 0
 
 
+def cmd_digest(args) -> int:
+    """Print a compact project-memory digest (for SessionStart injection).
+
+    Token-minimal: the code-aligned context map + the decisions catalogue
+    (capped), so an assistant knows the project's shape and what's already
+    decided — without reading the whole wiki.
+    """
+    mem = resolve(args.memory)
+    if not mem.root.exists():
+        print("(no project memory here)")
+        return 0
+    out = ["# Project memory (engram) — session digest",
+           "Use `mem search \"...\"` to pull details; `mem note \"...\"` to record a "
+           "durable fact. Do NOT read the whole wiki.", ""]
+    if mem.context.exists():
+        out.append(mem.context.read_text(encoding="utf-8").rstrip())
+        out.append("")
+    if mem.index_md.exists():
+        lines = mem.index_md.read_text(encoding="utf-8").splitlines()
+        entries = [l for l in lines if l.strip().startswith(("- ", "* "))]
+        out.append("## Decisions catalogue (%d)" % len(entries))
+        out.extend(entries[: args.max_pages])
+        if len(entries) > args.max_pages:
+            out.append("- … (+%d more — use `mem search`)" % (len(entries) - args.max_pages))
+    print("\n".join(out).rstrip() + "\n")
+    return 0
+
+
+def _wire_session_hook(repo: Path, core_dir: Path) -> None:
+    """Register a Claude Code SessionStart hook that injects `mem digest`.
+
+    Merges into `.claude/settings.json` without clobbering existing hooks; a
+    clone without this just doesn't get the digest (safe no-op).
+    """
+    settings_path = repo / ".claude" / "settings.json"
+    command = "%s %s/mem.py digest" % (sys.executable, core_dir)
+    data = {}
+    if settings_path.exists():
+        try:
+            data = json.loads(settings_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            print("  ! %s exists but isn't valid JSON — skipped session hook." % settings_path,
+                  file=sys.stderr)
+            return
+    hooks = data.setdefault("hooks", {})
+    starts = hooks.setdefault("SessionStart", [])
+    already = any(
+        isinstance(g, dict) and any(
+            isinstance(h, dict) and "mem.py digest" in str(h.get("command", ""))
+            for h in g.get("hooks", []))
+        for g in starts)
+    if already:
+        print("  SessionStart digest hook already present -> %s" % settings_path)
+        return
+    starts.append({"hooks": [{"type": "command", "command": command}]})
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    print("  Registered Claude Code SessionStart digest hook -> %s" % settings_path)
+
+
 def cmd_context(args) -> int:
     """Build/refresh the code-aligned big-picture map (.memory/context.md).
 
@@ -690,6 +750,51 @@ def cmd_context(args) -> int:
     print("Context map -> %s  (%d modules; described: %s)"
           % (mem.context.relative_to(root), len(modules), scope))
     return 0
+
+
+def cmd_note(args) -> int:
+    """Record a durable fact as a curated source (the assistant's write primitive).
+
+    Writes a `raw/` source (the source of truth — anti-drift intact) and, by
+    default, compiles it into a page. Meant to be called autonomously by the
+    in-session assistant when something worth remembering emerges.
+    """
+    from memlib.compile import _slugify
+    from datetime import date as _date
+    mem = resolve(args.memory)
+    if not mem.root.exists():
+        print("No .memory/ here. Run `mem init` first.", file=sys.stderr)
+        return 1
+    text = args.text if args.text is not None else sys.stdin.read()
+    text = (text or "").strip()
+    if not text:
+        print("Nothing to record (empty note).", file=sys.stderr)
+        return 1
+    title = (args.title or text.splitlines()[0])[:80].strip().rstrip(".")
+    slug = _slugify(title) or "nota"
+    today = _date.today().isoformat()
+    mem.raw.mkdir(parents=True, exist_ok=True)
+    raw_rel = "raw/%s-%s.md" % (today, slug)
+    raw_path = mem.root / raw_rel
+    n = 2
+    while raw_path.exists():
+        raw_rel = "raw/%s-%s-%d.md" % (today, slug, n)
+        raw_path = mem.root / raw_rel
+        n += 1
+    body = ["# %s" % title, ""]
+    if args.title and args.title.strip().rstrip(".") != text.splitlines()[0].strip().rstrip("."):
+        body.append(text)
+    else:
+        body.append(text if "\n" in text or text != title else "Decisione: %s." % text)
+    raw_path.write_text("\n".join(body).rstrip() + "\n", encoding="utf-8")
+    print("Recorded source -> %s" % raw_rel)
+    if args.raw_only:
+        print("Run `mem ingest` to compile it into a page.")
+        return 0
+    return cmd_ingest(argparse.Namespace(
+        memory=args.memory, since=None, max_candidates=8, type="decision",
+        backend="offline", model=None, only=raw_rel, force=False,
+        no_relink=False, relink_top_k=3))
 
 
 def cmd_alias(args) -> int:
@@ -936,36 +1041,52 @@ def cmd_add_synthesis(args) -> int:
 # --------------------------------------------------------------------------- #
 # install-hooks — wire the merge hook into .git/hooks (plug-and-play)
 # --------------------------------------------------------------------------- #
+def _install_git_hook(hooks_src, git_dir, core_dir, name, force) -> bool:
+    """Copy one git hook, baking the absolute CLI path. Returns True if written."""
+    src = hooks_src / name
+    if not src.exists():
+        print("Hook source missing: %s" % src, file=sys.stderr)
+        return False
+    dst = git_dir / "hooks" / name
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.exists() and not force:
+        print("%s already exists (use --force)." % dst, file=sys.stderr)
+        return False
+    text = (src.read_text(encoding="utf-8")
+            .replace("__PYTHON__", sys.executable)
+            .replace("__CORE__", str(core_dir)))
+    dst.write_text(text, encoding="utf-8")
+    dst.chmod(0o755)
+    print("Installed %s hook -> %s" % (name, dst))
+    return True
+
+
 def cmd_install_hooks(args) -> int:
     repo = Path(args.repo).resolve()
     git_dir = repo / ".git"
     if not git_dir.is_dir():
         print("Not a git repo: %s (run `git init` first)." % repo, file=sys.stderr)
         return 1
-    src = Path(__file__).resolve().parent.parent / "hooks" / "post-merge"
-    if not src.exists():
-        print("Hook source missing: %s" % src, file=sys.stderr)
-        return 1
-    dst = git_dir / "hooks" / "post-merge"
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    if dst.exists() and not args.force:
-        print("%s already exists (use --force)." % dst, file=sys.stderr)
-        return 1
-    # Bake the absolute CLI path so the hook works from a repo without core/.
+    hooks_src = Path(__file__).resolve().parent.parent / "hooks"
     core_dir = Path(__file__).resolve().parent
-    text = (src.read_text(encoding="utf-8")
-            .replace("__PYTHON__", sys.executable)
-            .replace("__CORE__", str(core_dir)))
-    dst.write_text(text, encoding="utf-8")
-    dst.chmod(0o755)
-    print("Installed post-merge hook -> %s" % dst)
+
+    if not _install_git_hook(hooks_src, git_dir, core_dir, "post-merge", args.force):
+        return 1
+    if not args.no_post_commit:
+        _install_git_hook(hooks_src, git_dir, core_dir, "post-commit", args.force)
+
     print("  CLI: %s %s/mem.py" % (sys.executable, core_dir))
     print("  On merge to '%s' (MEM_CANONICAL_BRANCH): Phase 1 + Phase 2 ingest "
           "(MEM_BACKEND=offline|llm) + auto-commit (MEM_AUTORECONCILE=1)."
           % os.environ.get("MEM_CANONICAL_BRANCH", "main"))
+    if not args.no_post_commit:
+        print("  On every commit (MEM_POSTCOMMIT=1): refresh context map + ingest "
+              "changed sources (0 tokens offline) + auto-commit; anti-loop guarded.")
 
     if not args.no_merge_driver:
         _wire_merge_driver(repo, core_dir)
+    if not args.no_session_hook:
+        _wire_session_hook(repo, core_dir)
     return 0
 
 
@@ -1180,6 +1301,13 @@ def main() -> int:
                    help="Neighbours per page (default: 3).")
     p.set_defaults(func=cmd_relink)
 
+    p = sub.add_parser("digest",
+                       help="Print a compact memory digest (context map + decisions) for SessionStart.")
+    add_memory(p)
+    p.add_argument("--max-pages", type=int, default=40, dest="max_pages",
+                   help="Max catalogue entries to list (default: 40).")
+    p.set_defaults(func=cmd_digest)
+
     p = sub.add_parser("context",
                        help="Build/refresh the code-aligned big-picture map (change-driven).")
     add_memory(p)
@@ -1196,6 +1324,15 @@ def main() -> int:
     p.add_argument("--apply", action="store_true", help="Write hub pages (else just list).")
     p.set_defaults(func=cmd_hubs)
 
+    p = sub.add_parser("note",
+                       help="Record a durable fact as a source (+compile). The assistant's write tool.")
+    add_memory(p)
+    p.add_argument("text", nargs="?", default=None, help="The fact (default: read stdin).")
+    p.add_argument("--title", default=None, help="Optional explicit title.")
+    p.add_argument("--raw-only", action="store_true", dest="raw_only",
+                   help="Write the source but don't compile it yet.")
+    p.set_defaults(func=cmd_note)
+
     p = sub.add_parser("alias", help="Curate a page's search aliases (synonyms).")
     add_memory(p)
     p.add_argument("slug", help="Page slug to edit.")
@@ -1209,6 +1346,10 @@ def main() -> int:
     p.add_argument("--force", action="store_true")
     p.add_argument("--no-merge-driver", action="store_true",
                    help="Skip wiring the .memory merge driver (.gitattributes + git config).")
+    p.add_argument("--no-post-commit", action="store_true",
+                   help="Skip the post-commit hook (memory update on every commit).")
+    p.add_argument("--no-session-hook", action="store_true",
+                   help="Skip wiring the Claude Code SessionStart digest hook.")
     p.set_defaults(func=cmd_install_hooks)
 
     p = sub.add_parser("review", help="List memory items needing human judgment.")

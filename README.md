@@ -38,15 +38,15 @@ STORAGE (git)        → .memory/ : raw/ · wiki/{decisions,concepts,entities,sy
 ```
 bin/mem · install.sh        # PATH wrapper + plug-and-play setup
 core/
-  mem.py                    # single CLI (init·index·search·lint·graph·detect·reconcile·ingest·
-                            #  relink·alias·hubs·review·add-synthesis·merge·merge-driver·install-hooks)
+  mem.py                    # single CLI (init·index·search·lint·graph·detect·reconcile·ingest·context·
+                            #  digest·note·relink·alias·hubs·review·add-synthesis·merge·merge-driver·install-hooks)
   change_detect.py          # Phase 1 reconcile: WHAT to touch (SHA-256 + signals), 0 tokens
   reconcile.py              # Phase 2 reconcile: HOW to edit (patches + retry, the LLM call)
   memlib/                   # stdlib library: frontmatter · pages · bm25 · graph · store
                             #  · compile · llm · index_store · ranking · relink · hubs · merge · context
-hooks/post-merge            # on merge to main: Phase 1 + ingest + auto-commit
-plugin/                     # Claude Code plugin: /mem:ingest · /mem:query · /mem:lint
-tests/                      # run.py (67 unit tests) · eval.py (scorecard) · bench.py
+hooks/                      # post-merge (reconcile at merge) · post-commit (update at commit)
+plugin/                     # Claude Code plugin: commands /mem:* + auto-invoked `project-memory` skill
+tests/                      # run.py (71 unit tests) · eval.py (scorecard) · bench.py
 .memory/                    # sample memory
 ```
 
@@ -75,6 +75,26 @@ regenerated (offline from README/docstring, or `--backend llm` to enrich just
 those). This is the layer meant to keep an assistant's view aligned with the code,
 and what a SessionStart hook injects so it knows the project's shape upfront.
 
+### Transparent in Claude Code (no commands)
+
+`mem install-hooks` wires three touch-points so the memory just *works* while you
+use Claude Code normally:
+
+- **Read (automatic):** a Claude Code **SessionStart** hook injects `mem digest`
+  (the context map + decisions catalogue) at the start of every session — the
+  assistant knows the project's shape without reading the repo. Wired by merging
+  `.claude/settings.json` (non-destructively).
+- **Write (autonomous):** an auto-invoked **`project-memory` skill** tells the
+  assistant to recall with `mem search` and record durable facts with `mem note`
+  on its own — `mem note` writes a `raw/` source (anti-drift intact) and compiles it.
+- **Align with code (on commit):** a **post-commit** git hook refreshes the
+  context map and ingests changed sources, then auto-commits the memory update.
+  The deterministic change-detect is the gate (0 tokens; no-op when nothing
+  relevant changed), with a **double anti-loop guard** (env flag + commit-message
+  sentinel). Inside a Claude Code session `claude -p` can't nest, so the hook stays
+  deterministic and the in-session assistant does any enrichment itself; from a
+  plain terminal it can use `claude -p`. Toggle with `MEM_POSTCOMMIT=0`.
+
 ## LLM backend — with your subscription, no API key
 
 Synthesis goes through Claude Code, not the Anthropic API:
@@ -89,6 +109,8 @@ Without `--backend llm`, `mem ingest` uses the deterministic **offline** backend
 
 ```bash
 mem context                  # build/refresh the code-aligned big-picture map (change-driven)
+mem digest                   # compact memory digest (map + decisions) — for SessionStart injection
+mem note "a durable fact"    # record a fact as a source (+compile) — the assistant's write tool
 mem detect                   # what changed (0 tokens); the "reconcile plan"
 mem relink                   # deterministic auto-linking: `## Correlate` section (0 tokens)
 mem alias <slug> "synonym"   # curate search aliases (against lexical miss)
@@ -109,7 +131,7 @@ branches keeps its conflict markers → flagged to `mem review` (no LLM call ins
 ## Tests, evaluation, performance
 
 ```bash
-python3 tests/run.py         # 67 unit tests (zero dependencies)
+python3 tests/run.py         # 71 unit tests (zero dependencies)
 python3 tests/eval.py        # "does it retrieve the right thing?" → recall/MRR + health + anti-drift
 python3 tests/bench.py       # benchmark 50→2000 pages
 ```
@@ -188,7 +210,7 @@ Attribution details in [`NOTICE`](NOTICE).
 
 ## Status
 
-Working and tested (67 tests, eval `PASS`): deterministic core, Phase 1, offline +
+Working and tested (71 tests, eval `PASS`): deterministic core, Phase 1, offline +
 LLM ingest, Phase 2 reconcile (tolerant patches + retry), merge hook with
 **auto-commit** + **git merge driver** (`mem merge-driver`, tested end-to-end with
 real merges), plug-and-play, Claude Code plugin, review queue, `add-synthesis`,
