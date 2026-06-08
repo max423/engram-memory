@@ -76,9 +76,14 @@ Miglioramenti landati (vedi `WEAKNESSES.md`):
   saltano il wiki quando è immutato (cache ~2x; O(change) se nessuna fonte cambia).
 - **Tokenizer normalizzato** (stopword IT/EN + stemmer leggero): recall@1 0.90→1.00.
 - **`mem merge`**: risoluzione deterministica dei conflitti su index.md/log.md (union).
+- **Patch di reconcile tolleranti** (spazi/virgolette/trattini) + loop di retry; validato
+  con simulazione di un modello "sbavato".
+- **Hook al merge completo** `hooks/post-merge`: Fase 1 + Fase 2 ingest + **auto-commit**,
+  testato end-to-end con un merge vero (backend offline). `mem install-hooks` incide il
+  path assoluto della CLI (funziona in qualsiasi repo, senza `core/`).
 
-Ancora aperto: il loop patch di reconcile va provato sul campo (path `claude -p`
-dal terminale); hook Fase 2 opt-in; backend offline = estrattivo per scelta.
+Ancora aperto: provare un reconcile LLM reale via `claude -p` da terminale (non
+annidabile in sessione); backend offline = estrattivo per scelta.
 
 ## Convenzioni di lavoro
 

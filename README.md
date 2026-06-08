@@ -155,9 +155,10 @@ token. È il fallback che tiene il loop runnable senza nulla installato; l'outpu
 - ✅ **Core deterministico** (`init/index/search/lint/graph/detect`) — verificato (25 test).
 - ✅ **Fase 1 change-detect** — token zero, località candidati provata dal benchmark.
 - ✅ **Ingest** — offline (estrattivo, 0 token) **e** LLM (`--backend llm` via `claude -p`).
-- ✅ **Fase 2 reconcile** (`mem reconcile --apply`) — applier reale + chiamata LLM cablata.
-- ✅ **Plug-and-play** — `install.sh` + `mem` su PATH + `mem install-hooks` + plugin Claude Code.
-- 🔧 **Da irrobustire** — fedeltà delle patch di reconcile sul campo (vedi `WEAKNESSES.md`).
+- ✅ **Fase 2 reconcile** (`mem reconcile --apply`) — applier reale (patch tolleranti + retry) + chiamata LLM cablata.
+- ✅ **Hook al merge** (`hooks/post-merge`) — Fase 1 + Fase 2 ingest + **auto-commit**, testato end-to-end con un merge vero (backend offline di default).
+- ✅ **Plug-and-play** — `install.sh` + `mem` su PATH + `mem install-hooks` (incide il path della CLI) + plugin Claude Code.
+- 🔧 **Da provare sul campo** — un reconcile LLM reale via `claude -p` da terminale (vedi `WEAKNESSES.md`).
 - 🔌 **Hook al merge** (`hooks/post-merge`) — Fase 1 attiva; Fase 2 + auto-commit = STUB.
 - 🔌 **Plugin Claude Code** (`/mem:ingest|query|lint`) — comandi thin che pilotano la CLI.
 

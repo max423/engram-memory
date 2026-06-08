@@ -12,6 +12,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -494,6 +495,63 @@ class TestCliEndToEnd(unittest.TestCase):
             self.assertEqual(r.returncode, 1)
             self.assertIn("no source", r.stdout)
             self.assertIn("Invalid type", r.stdout)
+
+
+class TestMergeHook(unittest.TestCase):
+    """End-to-end: a real `git merge` fires post-merge, which ingests the new
+    source (offline) and auto-commits the memory. No LLM involved."""
+
+    def _mem(self, *args, cwd, env):
+        return subprocess.run([sys.executable, str(CORE / "mem.py"), *args],
+                              cwd=cwd, capture_output=True, text=True, env=env)
+
+    def test_post_merge_ingests_and_autocommits(self):
+        if shutil.which("git") is None:
+            self.skipTest("git not available")
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            env = {**os.environ,
+                   "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                   "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+                   "MEM_BACKEND": "offline", "MEM_AUTORECONCILE": "1",
+                   "MEM_CANONICAL_BRANCH": "main"}
+
+            def git(*a):
+                return subprocess.run(["git", "-C", str(d), *a],
+                                      capture_output=True, text=True, env=env)
+
+            subprocess.run(["git", "init", str(d)], capture_output=True, env=env)
+            git("checkout", "-b", "main")
+            self._mem("init", ".", cwd=str(d), env=env)
+            git("add", "-A")
+            git("commit", "-m", "init memory")
+            # install the hook (bakes the absolute CLI path into .git/hooks)
+            r = self._mem("install-hooks", str(d), cwd=str(d), env=env)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertTrue((d / ".git" / "hooks" / "post-merge").exists())
+
+            # a feature branch contributes a new curated source
+            git("checkout", "-b", "feature")
+            (d / ".memory" / "raw" / "2026-07-01-cdn-asset.md").write_text(
+                "# Decisione: CDN per gli asset\n\n"
+                "Scelta: **usare una CDN per gli asset statici.**\n")
+            git("add", "-A")
+            git("commit", "-m", "add source")
+
+            # merge into main (no-ff so the hook fires and there's a merge commit)
+            git("checkout", "main")
+            m = git("merge", "--no-ff", "-m", "merge feature", "feature")
+            self.assertEqual(m.returncode, 0, m.stderr)
+
+            # the hook compiled the source into a page (slug from the filename)...
+            page = d / ".memory" / "wiki" / "decisions" / "cdn-asset.md"
+            self.assertTrue(page.exists(),
+                            "hook didn't compile the source.\n%s\n%s" % (m.stdout, m.stderr))
+            # ...and auto-committed the memory update
+            log = git("log", "--oneline").stdout
+            self.assertIn("memory: reconcile after merge", log)
+            # working tree is clean (everything committed)
+            self.assertEqual(git("status", "--porcelain").stdout.strip(), "")
 
 
 if __name__ == "__main__":

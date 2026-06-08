@@ -1,51 +1,62 @@
 #!/usr/bin/env bash
-# post-merge — STUB hook: refresh the project memory after a merge to main.
+# post-merge — refresh the project memory after a merge to the canonical branch.
 #
-# The reconcile trigger is "merge onto the canonical branch", not every commit
-# (see .memory decision: reconcile-al-merge). Install with:
-#
-#     ln -sf ../../hooks/post-merge .git/hooks/post-merge
-#     chmod +x .git/hooks/post-merge
-#
-# git fires post-merge after `git merge` / `git pull` completes. We only act on
-# the canonical branch; on feature branches the memory is left untouched.
+# The reconcile trigger is "merge onto main", not every commit (see the .memory
+# decision: reconcile-al-merge). `mem install-hooks` bakes the absolute CLI path
+# into the two lines below so this works from ANY repo (the user's repo does not
+# contain this project's core/). If left as placeholders, we fall back sanely.
 set -euo pipefail
 
-CANONICAL_BRANCH="${MEM_CANONICAL_BRANCH:-main}"
+PYTHON="__PYTHON__"
+CORE="__CORE__"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-CORE="$REPO_ROOT/core"
+# Fall back if install-hooks didn't substitute (glob guard avoids matching the
+# exact sentinel, which install-hooks replaces everywhere it appears).
+case "$PYTHON" in *__*) PYTHON="python3" ;; esac
+case "$CORE" in *__*) CORE="$REPO_ROOT/core" ;; esac
+run_mem() { "$PYTHON" "$CORE/mem.py" "$@"; }
+
+CANONICAL_BRANCH="${MEM_CANONICAL_BRANCH:-main}"
 MEMORY="$REPO_ROOT/.memory"
+BACKEND="${MEM_BACKEND:-offline}"          # offline (0 tokens) | llm (claude -p)
 
 branch="$(git rev-parse --abbrev-ref HEAD)"
 if [ "$branch" != "$CANONICAL_BRANCH" ]; then
   echo "[mem] on '$branch' (not '$CANONICAL_BRANCH') — skipping reconcile."
   exit 0
 fi
+[ -d "$MEMORY" ] || { echo "[mem] no .memory/ in this repo — skipping."; exit 0; }
 
-if [ ! -d "$MEMORY" ]; then
-  echo "[mem] no .memory/ in this repo — skipping."
+echo "[mem] Phase 1: detecting changed curated sources (zero tokens)..."
+run_mem detect --memory "$MEMORY" --since ORIG_HEAD
+
+if [ "${MEM_AUTORECONCILE:-1}" != "1" ]; then
+  echo "[mem] auto-reconcile disabled (MEM_AUTORECONCILE=0). Done."
   exit 0
 fi
 
-echo "[mem] Phase 1: detecting changed curated sources (zero tokens)..."
-# ORIG_HEAD is the pre-merge commit; diff against it to scope to this merge.
-python3 "$CORE/mem.py" detect --memory "$MEMORY" --since ORIG_HEAD
+echo "[mem] Phase 2: ingest (backend=$BACKEND)$([ "$BACKEND" = llm ] && echo ' + reconcile')..."
+run_mem ingest --memory "$MEMORY" --since ORIG_HEAD --backend "$BACKEND"
+if [ "$BACKEND" = "llm" ]; then
+  run_mem reconcile --memory "$MEMORY" --since ORIG_HEAD --apply || true
+fi
 
-# --- Phase 2 + commit -------------------------------------------------------
-# The LLM call (reconcile) is wired via `claude -p` (uses your subscription, no
-# API key). It is OPT-IN here because it edits files and spends tokens on merge.
-# Set MEM_AUTORECONCILE=1 to enable. NOTE: the hook must run from a real shell,
-# not nested inside a Claude Code session (`claude -p` won't nest).
-if [ "${MEM_AUTORECONCILE:-0}" = "1" ]; then
-  echo "[mem] Phase 2: reconciling (claude -p)..."
-  python3 "$CORE/mem.py" ingest    --memory "$MEMORY" --since ORIG_HEAD --backend llm
-  python3 "$CORE/mem.py" reconcile --memory "$MEMORY" --since ORIG_HEAD --apply
-  python3 "$CORE/mem.py" index     --memory "$MEMORY"
-  python3 "$CORE/mem.py" lint      --memory "$MEMORY" || {
-    echo "[mem] lint failed — review before committing the memory."; exit 1; }
-  python3 "$CORE/mem.py" detect    --memory "$MEMORY" --update-snapshot
-  git add "$MEMORY/wiki" "$MEMORY/index.md" "$MEMORY/log.md"
-  git commit -m "memory: reconcile after merge" || true
+# Resolve any catalogue conflict the merge may have left, then refresh + validate.
+run_mem merge --memory "$MEMORY" >/dev/null 2>&1 || true
+run_mem index --memory "$MEMORY" >/dev/null
+if ! run_mem lint --memory "$MEMORY"; then
+  echo "[mem] lint reported drift — NOT committing. Fix, then commit manually."
+  exit 1
+fi
+run_mem detect --memory "$MEMORY" --update-snapshot >/dev/null
+
+# Auto-commit the curated memory if anything changed (index/ is git-ignored).
+# Stage only the curated files, then commit the staged index WITHOUT a pathspec:
+# a pathspec ("partial") commit is refused while MERGE_HEAD is still set.
+git add -- "$MEMORY/wiki" "$MEMORY/index.md" "$MEMORY/log.md" 2>/dev/null || true
+if git diff --cached --quiet; then
+  echo "[mem] no memory changes to commit."
 else
-  echo "[mem] Phase 2 disabled (set MEM_AUTORECONCILE=1 to auto-reconcile on merge)."
+  git commit -m "memory: reconcile after merge into $CANONICAL_BRANCH" >/dev/null
+  echo "[mem] committed memory update."
 fi

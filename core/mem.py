@@ -589,10 +589,17 @@ def cmd_install_hooks(args) -> int:
     if dst.exists() and not args.force:
         print("%s already exists (use --force)." % dst, file=sys.stderr)
         return 1
-    dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+    # Bake the absolute CLI path so the hook works from a repo without core/.
+    core_dir = Path(__file__).resolve().parent
+    text = (src.read_text(encoding="utf-8")
+            .replace("__PYTHON__", sys.executable)
+            .replace("__CORE__", str(core_dir)))
+    dst.write_text(text, encoding="utf-8")
     dst.chmod(0o755)
     print("Installed post-merge hook -> %s" % dst)
-    print("It runs Phase 1 on merge to '%s' (override with MEM_CANONICAL_BRANCH)."
+    print("  CLI: %s %s/mem.py" % (sys.executable, core_dir))
+    print("  On merge to '%s' (MEM_CANONICAL_BRANCH): Phase 1 + Phase 2 ingest "
+          "(MEM_BACKEND=offline|llm) + auto-commit (MEM_AUTORECONCILE=1)."
           % os.environ.get("MEM_CANONICAL_BRANCH", "main"))
     return 0
 
