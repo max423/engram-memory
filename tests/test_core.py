@@ -887,6 +887,74 @@ class TestHubs(unittest.TestCase):
             self.assertIn("[[%s]]" % m, body)
 
 
+class TestContext(unittest.TestCase):
+    """Code-aligned big-picture map: deterministic scan + change-driven descriptions."""
+
+    def _project(self, d):
+        (d / "core").mkdir(parents=True, exist_ok=True)
+        (d / "core" / "app.py").write_text('"""The core service entry point."""\n',
+                                            encoding="utf-8")
+        (d / "core" / "util.py").write_text("# helper\nx = 1\n", encoding="utf-8")
+        (d / "web").mkdir(parents=True, exist_ok=True)
+        (d / "web" / "index.js").write_text("// Frontend bundle entry.\n", encoding="utf-8")
+        (d / "README.md").write_text("# demo\n\nA demo project.\n", encoding="utf-8")
+        (d / "node_modules").mkdir(exist_ok=True)
+        (d / "node_modules" / "x.js").write_text("ignored\n", encoding="utf-8")
+
+    def test_scan_groups_and_ignores(self):
+        from memlib import context as ctx
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d); self._project(d)
+            mods = {m["name"]: m for m in ctx.scan(d)}
+            self.assertIn("core", mods)
+            self.assertIn("web", mods)
+            self.assertEqual(mods["core"]["file_count"], 2)
+            # node_modules is ignored; README at root buckets under (root)
+            self.assertNotIn("node_modules", mods)
+            self.assertIn("Python", mods["core"]["primary_langs"])
+
+    def test_describe_offline_prefers_docstring(self):
+        from memlib import context as ctx
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d); self._project(d)
+            mods = {m["name"]: m for m in ctx.scan(d)}
+            self.assertIn("entry point", ctx.describe_offline(d, mods["core"]).lower())
+            self.assertIn("frontend", ctx.describe_offline(d, mods["web"]).lower())
+
+    def test_changed_modules(self):
+        from memlib import context as ctx
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d); self._project(d)
+            snap = ctx.code_hashes(d)
+            self.assertEqual(ctx.changed_modules(d, snap), set())  # nothing changed
+            (d / "web" / "index.js").write_text("// changed\n", encoding="utf-8")
+            self.assertEqual(ctx.changed_modules(d, snap), {"web"})
+
+    def test_render_parse_roundtrip(self):
+        from memlib import context as ctx
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d); self._project(d)
+            mods = ctx.scan(d)
+            descs = {m["name"]: "desc for %s" % m["name"] for m in mods}
+            text = ctx.render(d, mods, descs)
+            recovered = ctx.parse_descriptions(text)
+            for m in mods:
+                self.assertEqual(recovered.get(m["name"]), "desc for %s" % m["name"])
+
+    def test_cmd_context_end_to_end_change_driven(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d); self._project(d)
+            mem_cli.cmd_init(argparse.Namespace(root=str(d), template="software"))
+            ns = lambda: argparse.Namespace(memory=d / ".memory", backend="offline", model=None)
+            self.assertEqual(mem_cli.cmd_context(ns()), 0)
+            ctxmd = d / ".memory" / "context.md"
+            self.assertTrue(ctxmd.exists())
+            self.assertIn("Context map", ctxmd.read_text(encoding="utf-8"))
+            # snapshot written; a re-run with no change reuses (still succeeds)
+            self.assertTrue((d / ".memory" / "index" / "code.sha256").exists())
+            self.assertEqual(mem_cli.cmd_context(ns()), 0)
+
+
 class TestMergeDriver(unittest.TestCase):
     """`mem merge-driver` wired via install-hooks: a real `git merge` unions the
     catalogue automatically and flags a conflicting prose page for review."""

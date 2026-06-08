@@ -62,6 +62,16 @@ class MemoryPaths:
     def log(self) -> Path:
         return self.root / "log.md"
 
+    @property
+    def context(self) -> Path:
+        """Auto-derived, code-aligned big-picture map (change-driven)."""
+        return self.root / "context.md"
+
+    @property
+    def project_root(self) -> Path:
+        """The code repo that owns this .memory/ (its parent)."""
+        return self.root.parent
+
     # --- generated artifacts ---
     @property
     def index_json(self) -> Path:
@@ -78,6 +88,11 @@ class MemoryPaths:
     @property
     def sources_sha(self) -> Path:
         return self.index_dir / "sources.sha256"
+
+    @property
+    def code_sha(self) -> Path:
+        """Per-file hashes of the *code* (for change-driven context updates)."""
+        return self.index_dir / "code.sha256"
 
     def exists(self) -> bool:
         return self.wiki.exists()

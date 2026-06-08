@@ -639,6 +639,59 @@ def cmd_hubs(args) -> int:
     return 0
 
 
+def cmd_context(args) -> int:
+    """Build/refresh the code-aligned big-picture map (.memory/context.md).
+
+    Deterministic structure at 0 tokens; descriptions are regenerated only for
+    modules whose code changed since the last snapshot (change-driven). The LLM
+    backend enriches just those modules; offline derives them from
+    README/docstring/leading comment.
+    """
+    from memlib import context as ctx
+    mem = resolve(args.memory)
+    if not mem.root.exists():
+        print("No .memory/ at %s. Run `mem init` first." % mem.root, file=sys.stderr)
+        return 1
+    root = mem.project_root
+
+    prev = {}
+    if mem.code_sha.exists():
+        try:
+            prev = json.loads(mem.code_sha.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            prev = {}
+    changed = ctx.changed_modules(root, prev) if prev else None  # None = first run
+
+    modules = ctx.scan(root)
+    if not modules:
+        print("No source files found under %s." % root, file=sys.stderr)
+        return 1
+    existing = ctx.parse_descriptions(mem.context.read_text(encoding="utf-8")) \
+        if mem.context.exists() else {}
+
+    descriptions, n_desc = {}, 0
+    for m in modules:
+        name = m["name"]
+        stale = changed is None or name in changed or name not in existing
+        if stale:
+            descriptions[name] = (ctx.describe_llm(root, m, args.model)
+                                  if args.backend == "llm"
+                                  else ctx.describe_offline(root, m))
+            n_desc += 1
+        else:
+            descriptions[name] = existing[name]
+
+    mem.context.write_text(ctx.render(root, modules, descriptions), encoding="utf-8")
+    mem.code_sha.parent.mkdir(parents=True, exist_ok=True)
+    mem.code_sha.write_text(json.dumps(ctx.code_hashes(root), indent=0),
+                            encoding="utf-8")
+    scope = "all (first run)" if changed is None else (
+        "%d changed module(s)" % len(changed) if changed else "none changed")
+    print("Context map -> %s  (%d modules; described: %s)"
+          % (mem.context.relative_to(root), len(modules), scope))
+    return 0
+
+
 def cmd_alias(args) -> int:
     """Curate a page's `aliases:` — synonyms indexed for search (anti lexical-miss)."""
     from memlib.pages import find_by_slug
@@ -1126,6 +1179,14 @@ def main() -> int:
     p.add_argument("--top-k", type=int, default=3, dest="top_k",
                    help="Neighbours per page (default: 3).")
     p.set_defaults(func=cmd_relink)
+
+    p = sub.add_parser("context",
+                       help="Build/refresh the code-aligned big-picture map (change-driven).")
+    add_memory(p)
+    p.add_argument("--backend", default="offline", choices=["offline", "llm"],
+                   help="offline = deterministic descriptions (0 tokens); llm = enrich changed modules.")
+    p.add_argument("--model", default=None, help="Model for --backend llm (default: sonnet).")
+    p.set_defaults(func=cmd_context)
 
     p = sub.add_parser("hubs",
                        help="Detect ambiguous decision clusters; --apply writes disambiguation hubs.")

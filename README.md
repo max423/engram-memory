@@ -30,7 +30,7 @@ Every command also runs as `python3 core/mem.py <cmd>`. A sample `.memory/`
 LLM (synthesis only) → compile(source) · reconcile(diff, pages)   minimal context
 CORE CLI (0 tokens)  → init·index·search(BM25)·lint·graph·detect·review·merge…
 STORAGE (git)        → .memory/ : raw/ · wiki/{decisions,concepts,entities,synthesis}
-                                  · schema.md · index.md · log.md · index/ (gitignored)
+                                  · schema.md · index.md · log.md · context.md · index/ (gitignored)
 ```
 
 ### Repo layout
@@ -43,10 +43,10 @@ core/
   change_detect.py          # Phase 1 reconcile: WHAT to touch (SHA-256 + signals), 0 tokens
   reconcile.py              # Phase 2 reconcile: HOW to edit (patches + retry, the LLM call)
   memlib/                   # stdlib library: frontmatter · pages · bm25 · graph · store
-                            #  · compile · llm · index_store · ranking · relink · hubs · merge
+                            #  · compile · llm · index_store · ranking · relink · hubs · merge · context
 hooks/post-merge            # on merge to main: Phase 1 + ingest + auto-commit
 plugin/                     # Claude Code plugin: /mem:ingest · /mem:query · /mem:lint
-tests/                      # run.py (62 unit tests) · eval.py (scorecard) · bench.py
+tests/                      # run.py (67 unit tests) · eval.py (scorecard) · bench.py
 .memory/                    # sample memory
 ```
 
@@ -64,6 +64,17 @@ source + candidate pages and classifies each page
 missing/ambiguous). Pages follow the state machine
 `draft → active → stale → contradicted → archived`.
 
+### Two memory layers
+
+Beyond curated **decisions** (the *why*), `mem context` maintains a
+code-aligned **big-picture map** (`.memory/context.md`, the *what/how*): a compact
+overview derived from the code — modules, languages, manifests, one-line
+descriptions. It is **change-driven**: the deterministic core groups the tree and
+hashes it at 0 tokens, and only modules whose code changed get their description
+regenerated (offline from README/docstring, or `--backend llm` to enrich just
+those). This is the layer meant to keep an assistant's view aligned with the code,
+and what a SessionStart hook injects so it knows the project's shape upfront.
+
 ## LLM backend — with your subscription, no API key
 
 Synthesis goes through Claude Code, not the Anthropic API:
@@ -77,6 +88,7 @@ Without `--backend llm`, `mem ingest` uses the deterministic **offline** backend
 ## Useful commands
 
 ```bash
+mem context                  # build/refresh the code-aligned big-picture map (change-driven)
 mem detect                   # what changed (0 tokens); the "reconcile plan"
 mem relink                   # deterministic auto-linking: `## Correlate` section (0 tokens)
 mem alias <slug> "synonym"   # curate search aliases (against lexical miss)
@@ -97,7 +109,7 @@ branches keeps its conflict markers → flagged to `mem review` (no LLM call ins
 ## Tests, evaluation, performance
 
 ```bash
-python3 tests/run.py         # 62 unit tests (zero dependencies)
+python3 tests/run.py         # 67 unit tests (zero dependencies)
 python3 tests/eval.py        # "does it retrieve the right thing?" → recall/MRR + health + anti-drift
 python3 tests/bench.py       # benchmark 50→2000 pages
 ```
@@ -176,7 +188,7 @@ Attribution details in [`NOTICE`](NOTICE).
 
 ## Status
 
-Working and tested (62 tests, eval `PASS`): deterministic core, Phase 1, offline +
+Working and tested (67 tests, eval `PASS`): deterministic core, Phase 1, offline +
 LLM ingest, Phase 2 reconcile (tolerant patches + retry), merge hook with
 **auto-commit** + **git merge driver** (`mem merge-driver`, tested end-to-end with
 real merges), plug-and-play, Claude Code plugin, review queue, `add-synthesis`,

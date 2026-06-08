@@ -2,6 +2,7 @@
 .memory/index/*.json
 .memory/index/*.idx
 .memory/index/sources.sha256
+.memory/index/code.sha256
 
 # Python
 __pycache__/
