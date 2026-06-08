@@ -1,6 +1,8 @@
 {
   "name": "project-memory",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Curated, git-native, token-minimal project memory. The deterministic core (index/search/lint/graph + change-detect) runs with zero tokens; the LLM is invoked only to compile a source or reconcile a change.",
+  "author": { "name": "engram" },
+  "keywords": ["memory", "wiki", "git", "decisions", "token-minimal", "bm25"],
   "commands": "./commands"
 }

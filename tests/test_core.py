@@ -497,6 +497,29 @@ class TestCliEndToEnd(unittest.TestCase):
             self.assertIn("Invalid type", r.stdout)
 
 
+class TestPlugin(unittest.TestCase):
+    ROOT = Path(__file__).resolve().parent.parent / "plugin"
+
+    def test_manifest_valid(self):
+        manifest = json.loads((self.ROOT / ".claude-plugin" / "plugin.json").read_text())
+        for key in ("name", "version", "description", "commands"):
+            self.assertIn(key, manifest)
+        self.assertEqual(manifest["commands"], "./commands")
+
+    def test_commands_present_and_wired(self):
+        from memlib import frontmatter
+        for name in ("ingest", "query", "lint"):
+            path = self.ROOT / "commands" / "mem" / ("%s.md" % name)
+            self.assertTrue(path.exists(), "missing command: %s" % name)
+            text = path.read_text(encoding="utf-8")
+            meta, body, malformed = frontmatter.parse(text)
+            self.assertFalse(malformed, "%s: malformed frontmatter" % name)
+            self.assertTrue(meta.get("description"), "%s: no description" % name)
+            # commands drive the installed CLI, not the source-tree path
+            self.assertIn("mem ", body, "%s: doesn't invoke the mem CLI" % name)
+            self.assertNotIn("python3 core/mem.py search", body)  # old hardcoded path
+
+
 class TestMergeHook(unittest.TestCase):
     """End-to-end: a real `git merge` fires post-merge, which ingests the new
     source (offline) and auto-commits the memory. No LLM involved."""
