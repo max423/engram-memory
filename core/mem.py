@@ -773,15 +773,27 @@ def cmd_context(args) -> int:
         return 1
     root = mem.project_root
 
+    # Optional per-memory tuning (one name per line), so a workspace-level map can
+    # skip machine/home noise and treat extra container dirs as monorepos.
+    def _read_set(path: Path) -> set:
+        if not path.exists():
+            return set()
+        return {l.strip() for l in path.read_text(encoding="utf-8").splitlines()
+                if l.strip() and not l.startswith("#")}
+
+    ignore = ctx.IGNORE_DIRS | _read_set(mem.root / ".memignore")
+    containers = ctx._MONOREPO_CONTAINERS | _read_set(mem.root / ".memcontainers")
+
     prev = {}
     if mem.code_sha.exists():
         try:
             prev = json.loads(mem.code_sha.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             prev = {}
-    changed = ctx.changed_modules(root, prev) if prev else None  # None = first run
+    changed = (ctx.changed_modules(root, prev, ignore, containers)
+               if prev else None)  # None = first run
 
-    modules = ctx.scan(root)
+    modules = ctx.scan(root, ignore, containers)
     if not modules:
         print("No source files found under %s." % root, file=sys.stderr)
         return 1
@@ -806,7 +818,7 @@ def cmd_context(args) -> int:
     mem.context.write_text(ctx.render(root, modules, descriptions, name=proj_name),
                            encoding="utf-8")
     mem.code_sha.parent.mkdir(parents=True, exist_ok=True)
-    mem.code_sha.write_text(json.dumps(ctx.code_hashes(root), indent=0),
+    mem.code_sha.write_text(json.dumps(ctx.code_hashes(root, ignore), indent=0),
                             encoding="utf-8")
     scope = "all (first run)" if changed is None else (
         "%d changed module(s)" % len(changed) if changed else "none changed")

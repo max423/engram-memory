@@ -1068,6 +1068,23 @@ class TestContext(unittest.TestCase):
             self.assertIn("core", mods)                # plain dir not descended
             self.assertEqual(mods["core"]["file_count"], 2)
 
+    def test_scan_honors_extra_ignore_and_containers(self):
+        """Per-memory tuning: extra ignore dirs are skipped, extra containers split."""
+        from memlib import context as ctx
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "keep").mkdir(); (d / "keep" / "a.py").write_text("x=1\n")
+            (d / "junk").mkdir(); (d / "junk" / "b.py").write_text("x=1\n")
+            (d / "tool" / "proj").mkdir(parents=True)
+            (d / "tool" / "proj" / "c.py").write_text("x=1\n")
+            mods = {m["name"] for m in ctx.scan(
+                d, ignore=ctx.IGNORE_DIRS | {"junk"},
+                containers=ctx._MONOREPO_CONTAINERS | {"tool"})}
+            self.assertIn("keep", mods)
+            self.assertNotIn("junk", mods)        # extra ignore honored
+            self.assertIn("tool/proj", mods)      # extra container honored
+            self.assertNotIn("tool", mods)
+
     def test_describe_offline_prefers_docstring(self):
         from memlib import context as ctx
         with tempfile.TemporaryDirectory() as d:

@@ -46,13 +46,14 @@ ROOT_BUCKET = "(root)"
 _MAX_BYTES = 1_000_000
 
 
-def iter_code_files(root: Path):
+def iter_code_files(root: Path, ignore: set | None = None):
     root = Path(root)
+    ignore = IGNORE_DIRS if ignore is None else ignore
     for p in sorted(root.rglob("*")):
         if not p.is_file():
             continue
         rel = p.relative_to(root)
-        if any(part in IGNORE_DIRS for part in rel.parts):
+        if any(part in ignore for part in rel.parts):
             continue
         if p.suffix.lower() not in LANG_BY_EXT:
             continue
@@ -70,21 +71,22 @@ def iter_code_files(root: Path):
 _MONOREPO_CONTAINERS = {"apps", "packages", "services", "libs", "modules", "plugins"}
 
 
-def _module_of(rel: Path) -> str:
+def _module_of(rel: Path, containers: set | None = None) -> str:
+    containers = _MONOREPO_CONTAINERS if containers is None else containers
     parts = rel.parts
     if len(parts) <= 1:
         return ROOT_BUCKET
-    if parts[0] in _MONOREPO_CONTAINERS and len(parts) > 2:
+    if parts[0] in containers and len(parts) > 2:
         return "%s/%s" % (parts[0], parts[1])
     return parts[0]
 
 
-def scan(root: Path) -> list:
+def scan(root: Path, ignore: set | None = None, containers: set | None = None) -> list:
     """Group code files by top-level module. Returns sorted module dicts."""
     root = Path(root)
     mods: dict = {}
-    for _p, rel in iter_code_files(root):
-        name = _module_of(rel)
+    for _p, rel in iter_code_files(root, ignore):
+        name = _module_of(rel, containers)
         m = mods.setdefault(name, {"name": name, "files": [], "langs": Counter()})
         m["files"].append(str(rel))
         m["langs"][LANG_BY_EXT.get(rel.suffix.lower(), rel.suffix)] += 1
@@ -229,9 +231,9 @@ def describe_llm(root: Path, module: dict, model=None) -> str:
 # --------------------------------------------------------------------------- #
 # Change detection over the code (per-file SHA-256).
 # --------------------------------------------------------------------------- #
-def code_hashes(root: Path) -> dict:
+def code_hashes(root: Path, ignore: set | None = None) -> dict:
     out = {}
-    for p, rel in iter_code_files(root):
+    for p, rel in iter_code_files(root, ignore):
         try:
             out[str(rel)] = hashlib.sha256(p.read_bytes()).hexdigest()
         except OSError:
@@ -239,9 +241,10 @@ def code_hashes(root: Path) -> dict:
     return out
 
 
-def changed_modules(root: Path, prev: dict) -> set:
+def changed_modules(root: Path, prev: dict, ignore: set | None = None,
+                    containers: set | None = None) -> set:
     """Top-level modules whose files were added/removed/modified vs `prev` hashes."""
-    cur = code_hashes(root)
+    cur = code_hashes(root, ignore)
     changed_files = set()
     for f, h in cur.items():
         if prev.get(f) != h:
@@ -249,7 +252,7 @@ def changed_modules(root: Path, prev: dict) -> set:
     for f in prev:
         if f not in cur:
             changed_files.add(f)
-    return {_module_of(Path(f)) for f in changed_files}
+    return {_module_of(Path(f), containers) for f in changed_files}
 
 
 # --------------------------------------------------------------------------- #
