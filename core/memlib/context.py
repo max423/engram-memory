@@ -15,6 +15,7 @@ the assistant has the project's shape without reading the whole repo.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from collections import Counter
 from datetime import date
@@ -49,20 +50,21 @@ _MAX_BYTES = 1_000_000
 def iter_code_files(root: Path, ignore: set | None = None):
     root = Path(root)
     ignore = IGNORE_DIRS if ignore is None else ignore
-    for p in sorted(root.rglob("*")):
-        if not p.is_file():
-            continue
-        rel = p.relative_to(root)
-        if any(part in ignore for part in rel.parts):
-            continue
-        if p.suffix.lower() not in LANG_BY_EXT:
-            continue
-        try:
-            if p.stat().st_size > _MAX_BYTES:
+    for dirpath, dirnames, filenames in os.walk(root):
+        # Prune ignored dirs *in place* so os.walk never descends into them —
+        # critical on big trees (node_modules, .cache, GOPATH): we must not
+        # traverse what we'd only discard.
+        dirnames[:] = sorted(d for d in dirnames if d not in ignore)
+        for fn in sorted(filenames):
+            p = Path(dirpath) / fn
+            if p.suffix.lower() not in LANG_BY_EXT:
                 continue
-        except OSError:
-            continue
-        yield p, rel
+            try:
+                if p.stat().st_size > _MAX_BYTES:
+                    continue
+            except OSError:
+                continue
+            yield p, p.relative_to(root)
 
 
 # Container dirs in a monorepo whose immediate children are independent
