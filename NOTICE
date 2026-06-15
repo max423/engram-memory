@@ -21,8 +21,3 @@ Vendored methodology (the `--template kb` profile, under methodology/):
     _schema/ policies (ingest, lint, citation, domain, page-types, naming,
     memory), _global/ working principles, AGENTS.md, and note templates.
     These are documentation/templates only — no executable code.
-
-    LICENSE STATUS: UNRESOLVED. kb-template ships without an explicit license.
-    Absent a license, all rights are reserved by its author; redistribution and
-    reuse here are pending the author's written permission (ideally MIT, to be
-    compatible with engram). Do not publish this directory until that is cleared.

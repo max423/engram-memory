@@ -114,7 +114,3 @@ python3 tests/bench.py   # benchmark 50→2000 pages
 **MIT © 2026 max423** — see [`LICENSE`](LICENSE). Keep the attribution notice.
 engram composes MIT-licensed code (`praneybehl/llm-wiki-plugin`) and reimplements
 patterns from other projects; details in [`NOTICE`](NOTICE).
-
-> **Note:** the `methodology/` directory (the `kb` profile) is vendored from a
-> colleague's `kb-template`, which currently ships **without a license**. Until its
-> author grants one (ideally MIT), do not redistribute that directory. See `NOTICE`.
