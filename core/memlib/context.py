@@ -64,8 +64,19 @@ def iter_code_files(root: Path):
         yield p, rel
 
 
+# Container dirs in a monorepo whose immediate children are independent
+# packages/services. Descend one level so each child becomes its own module
+# (apps/frontend, packages/ui) instead of one giant 'apps' bucket.
+_MONOREPO_CONTAINERS = {"apps", "packages", "services", "libs", "modules", "plugins"}
+
+
 def _module_of(rel: Path) -> str:
-    return rel.parts[0] if len(rel.parts) > 1 else ROOT_BUCKET
+    parts = rel.parts
+    if len(parts) <= 1:
+        return ROOT_BUCKET
+    if parts[0] in _MONOREPO_CONTAINERS and len(parts) > 2:
+        return "%s/%s" % (parts[0], parts[1])
+    return parts[0]
 
 
 def scan(root: Path) -> list:
@@ -262,8 +273,17 @@ def parse_descriptions(text: str) -> dict:
     return out
 
 
+_TITLE_RE = re.compile(r"^#\s+Context map\s+—\s+(.+?)\s*$", re.MULTILINE)
+
+
+def parse_title(text: str) -> str | None:
+    """Recover the project name from an existing context.md title, if any."""
+    m = _TITLE_RE.search(text)
+    return m.group(1).strip() if m else None
+
+
 def render(root: Path, modules: list, descriptions: dict,
-           updated: str | None = None) -> str:
+           updated: str | None = None, name: str | None = None) -> str:
     root = Path(root)
     updated = updated or date.today().isoformat()
     manifests = detect_manifests(root)
@@ -275,7 +295,7 @@ def render(root: Path, modules: list, descriptions: dict,
     stack = ", ".join("%s (%s)" % (n, t) for n, t in manifests) or "—"
 
     lines = [
-        "# Context map — %s" % root.name,
+        "# Context map — %s" % (name or root.name),
         "",
         "> Auto-derived from the code (deterministic core, LLM only on changed "
         "modules), change-driven. Updated %s." % updated,

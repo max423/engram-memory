@@ -588,6 +588,19 @@ class TestCliEndToEnd(unittest.TestCase):
             self.assertIn("research", schema.lower())
             self.assertIn("paper", schema.lower())   # research-specific entity
 
+    def test_context_name_override_persists(self):
+        """`--name` sets the map title and sticks across re-scans (no --name)."""
+        with tempfile.TemporaryDirectory() as d:
+            self._run("init", ".", cwd=d)
+            (Path(d) / "core").mkdir()
+            (Path(d) / "core" / "a.py").write_text('"""Entry."""\n')
+            self._run("context", "--memory", ".memory", "--name", "Artemide", cwd=d)
+            ctx_md = Path(d) / ".memory" / "context.md"
+            self.assertTrue(ctx_md.read_text().startswith("# Context map — Artemide"))
+            # a re-scan without --name keeps the name (not the folder name)
+            self._run("context", "--memory", ".memory", cwd=d)
+            self.assertTrue(ctx_md.read_text().startswith("# Context map — Artemide"))
+
     def test_init_template_kb(self):
         """The unified kb profile (engram engine + kb-template methodology)."""
         with tempfile.TemporaryDirectory() as d:
@@ -1034,6 +1047,26 @@ class TestContext(unittest.TestCase):
             # node_modules is ignored; README at root buckets under (root)
             self.assertNotIn("node_modules", mods)
             self.assertIn("Python", mods["core"]["primary_langs"])
+
+    def test_scan_descends_into_monorepo_containers(self):
+        """apps/<svc> become separate modules; plain top-level dirs do not split."""
+        from memlib import context as ctx
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "apps" / "frontend").mkdir(parents=True)
+            (d / "apps" / "frontend" / "index.ts").write_text("// fe\n")
+            (d / "apps" / "api").mkdir(parents=True)
+            (d / "apps" / "api" / "main.ts").write_text("// api\n")
+            (d / "core").mkdir()                       # not a container -> stays whole
+            (d / "core" / "a.ts").write_text("// a\n")
+            (d / "core" / "sub").mkdir()
+            (d / "core" / "sub" / "b.ts").write_text("// b\n")
+            mods = {m["name"]: m for m in ctx.scan(d)}
+            self.assertIn("apps/frontend", mods)
+            self.assertIn("apps/api", mods)
+            self.assertNotIn("apps", mods)             # no giant blob
+            self.assertIn("core", mods)                # plain dir not descended
+            self.assertEqual(mods["core"]["file_count"], 2)
 
     def test_describe_offline_prefers_docstring(self):
         from memlib import context as ctx

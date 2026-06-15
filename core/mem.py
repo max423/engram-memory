@@ -785,8 +785,11 @@ def cmd_context(args) -> int:
     if not modules:
         print("No source files found under %s." % root, file=sys.stderr)
         return 1
-    existing = ctx.parse_descriptions(mem.context.read_text(encoding="utf-8")) \
-        if mem.context.exists() else {}
+    existing_text = mem.context.read_text(encoding="utf-8") if mem.context.exists() else ""
+    existing = ctx.parse_descriptions(existing_text) if existing_text else {}
+    # Project name: explicit --name wins, else keep the title already in the map
+    # (so a one-time rename sticks), else fall back to the folder name.
+    proj_name = getattr(args, "name", None) or ctx.parse_title(existing_text) or root.name
 
     descriptions, n_desc = {}, 0
     for m in modules:
@@ -800,7 +803,8 @@ def cmd_context(args) -> int:
         else:
             descriptions[name] = existing[name]
 
-    mem.context.write_text(ctx.render(root, modules, descriptions), encoding="utf-8")
+    mem.context.write_text(ctx.render(root, modules, descriptions, name=proj_name),
+                           encoding="utf-8")
     mem.code_sha.parent.mkdir(parents=True, exist_ok=True)
     mem.code_sha.write_text(json.dumps(ctx.code_hashes(root), indent=0),
                             encoding="utf-8")
@@ -1373,6 +1377,9 @@ def main() -> int:
     p.add_argument("--backend", default="offline", choices=["offline", "llm"],
                    help="offline = deterministic descriptions (0 tokens); llm = enrich changed modules.")
     p.add_argument("--model", default=None, help="Model for --backend llm (default: sonnet).")
+    p.add_argument("--name", default=None,
+                   help="Project name for the map title (persists across re-scans; "
+                        "defaults to the folder name).")
     p.set_defaults(func=cmd_context)
 
     p = sub.add_parser("hubs",
