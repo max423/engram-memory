@@ -34,6 +34,7 @@ IGNORE_DIRS = {
     ".git", ".memory", "__pycache__", "node_modules", ".venv", "venv", "env",
     "dist", "build", ".next", ".nuxt", "target", "vendor", ".idea", ".vscode",
     ".pytest_cache", ".mypy_cache", ".ruff_cache", "coverage", ".tox",
+    ".claude", ".pnpm-store", ".pnpm", ".github", ".domscribe",
 }
 MANIFESTS = {
     "package.json": "Node", "pyproject.toml": "Python", "setup.py": "Python",

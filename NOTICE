@@ -14,3 +14,15 @@ Patterns studied and reimplemented (no code copied):
 - axoviq-ai/synthadoc    (AGPL+CLA) — STUDIED ONLY for the page status machine.
     No code from synthadoc is included or derived; the state machine here is an
     independent reimplementation of a documented concept.
+
+Vendored methodology (the `--template kb` profile, under methodology/):
+
+- kb-template (by a colleague of the maintainer) — the Markdown methodology:
+    _schema/ policies (ingest, lint, citation, domain, page-types, naming,
+    memory), _global/ working principles, AGENTS.md, and note templates.
+    These are documentation/templates only — no executable code.
+
+    LICENSE STATUS: UNRESOLVED. kb-template ships without an explicit license.
+    Absent a license, all rights are reserved by its author; redistribution and
+    reuse here are pending the author's written permission (ideally MIT, to be
+    compatible with engram). Do not publish this directory until that is cleared.

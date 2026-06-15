@@ -164,10 +164,69 @@ A decision links the user needs it serves and the features/segments it touches.
 A synthesis links every decision and entity it rolls up.
 """
 
+SCHEMA_KB = """\
+# schema.md — node and relation types (knowledge-base memory)
+
+> Unified profile: engram's engine running the kb-template methodology. The
+> deterministic core stays the same; this schema widens the taxonomy and adds a
+> multi-domain convention. The full policies live in `methodology/_schema/`.
+
+## Multi-domain layout (domain = a `wiki/` subfolder)
+
+A knowledge base spans several domains (work, study, personal, research, …).
+Because the core collects pages recursively, a domain is just a subfolder:
+
+    wiki/<domain>/...        e.g. wiki/work/  wiki/study/  wiki/personal/
+    raw/<domain>/...         raw sources mirror the domain
+
+Register active domains in `methodology/_domains.md`. Route new material per
+`methodology/_schema/domain-policy.md` before placing it.
+
+## Node types (`type:`)
+
+Core: `decision` · `concept` · `entity` · `synthesis`.
+Knowledge-base: `source` · `source-summary` · `comparison` · `method` ·
+`procedure` · `meeting` · `session-note` · `project-brief` · `entity-brief` ·
+`claim` · `open-loop` · `person` · `topic-note` · `project-note` ·
+`planning-note` · `global-context` · `lint-report`.
+
+See `methodology/_schema/page-types.md` for when to use each.
+
+## Frontmatter (every page)
+
+```yaml
+id: kebab-slug            # stable, == filename stem
+type: decision            # any type above
+status: active            # draft | active | complete | stale | contradicted
+                          #   | superseded | tentative | rejected | archived
+title: Human title
+domain: work              # which wiki/<domain> it belongs to
+tags: [pricing, client]
+sources:                  # REQUIRED — anti-drift anchor; >=1 raw/ file
+  - raw/work/2026-06-14-kickoff.md
+created: 2026-06-14
+updated: 2026-06-14
+```
+
+## Methodology (kb-template, vendored under `methodology/`)
+
+- `ingest-policy.md`   — inbox → infer domain → derived notes → backlinks → log.
+- `lint-policy.md`     — light/standard/deep lint, severity critical/major/minor.
+- `citation-policy.md` — every claim source-backed, graph-visible `[[...]]` links.
+- `domain-policy.md`   — domains are created dynamically and registered.
+- templates/           — decision / meeting / session-note / source-summary.
+
+## Relations (wikilinks `[[slug]]`)
+
+Plain `[[slug]]` in the body is the edge. A processed source under `raw/` must be
+reachable from at least one derived note via a graph-visible link.
+"""
+
 SCHEMA_TEMPLATES = {
     "software": SCHEMA_TEMPLATE,
     "research": SCHEMA_RESEARCH,
     "product": SCHEMA_PRODUCT,
+    "kb": SCHEMA_KB,
 }
 
 

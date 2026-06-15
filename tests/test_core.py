@@ -588,6 +588,40 @@ class TestCliEndToEnd(unittest.TestCase):
             self.assertIn("research", schema.lower())
             self.assertIn("paper", schema.lower())   # research-specific entity
 
+    def test_init_template_kb(self):
+        """The unified kb profile (engram engine + kb-template methodology)."""
+        with tempfile.TemporaryDirectory() as d:
+            r = self._run("init", ".", "--template", "kb", cwd=d)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            schema = (Path(d) / ".memory" / "schema.md").read_text()
+            self.assertIn("knowledge-base", schema.lower())
+            self.assertIn("wiki/<domain>", schema)       # multi-domain convention
+            self.assertIn("methodology/", schema)         # vendored policies
+
+    def test_lint_accepts_kb_taxonomy_but_rejects_unknown(self):
+        """kb-template types/status (meeting/complete) are valid; junk is not."""
+        with tempfile.TemporaryDirectory() as d:
+            self._run("init", ".", "--template", "kb", cwd=d)
+            (Path(d) / ".memory" / "raw").mkdir(exist_ok=True)
+            (Path(d) / ".memory" / "raw" / "s.md").write_text("x")
+            work = Path(d) / ".memory" / "wiki" / "work"
+            work.mkdir(parents=True)
+            (work / "kickoff.md").write_text(
+                "---\nid: kickoff\ntype: meeting\nstatus: complete\n"
+                "title: Kickoff\ntags: [client]\nsources:\n  - raw/s.md\n"
+                "created: 2026-06-14\nupdated: 2026-06-14\n---\n# Kickoff\nbody\n")
+            (work / "bad.md").write_text(
+                "---\nid: bad\ntype: banana\nstatus: weird\ntitle: Bad\n"
+                "tags: [x]\nsources:\n  - raw/s.md\ncreated: 2026-06-14\n"
+                "updated: 2026-06-14\n---\n# Bad\nbody\n")
+            self._run("index", "--memory", ".memory", cwd=d)
+            r = self._run("lint", "--memory", ".memory", cwd=d)
+            out = r.stdout + r.stderr
+            self.assertIn("banana", out)          # unknown type flagged
+            self.assertIn("weird", out)           # unknown status flagged
+            self.assertNotIn("meeting", out)      # kb type accepted, not flagged
+            self.assertNotIn("complete", out)     # kb status accepted, not flagged
+
     def test_review_surfaces_items(self):
         with tempfile.TemporaryDirectory() as d:
             self._run("init", ".", cwd=d)

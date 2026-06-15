@@ -19,8 +19,25 @@ TOKEN_RE = re.compile(r"[a-z0-9]+")
 _FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
 _INLINE_CODE_RE = re.compile(r"`[^`]*`")
 
-VALID_TYPES = {"decision", "concept", "entity", "synthesis"}
-VALID_STATUS = {"draft", "active", "stale", "contradicted", "archived"}
+# Canonical page types. The first four are engram's original backbone; the rest
+# come from the kb-template methodology (see methodology/_schema/page-types.md),
+# folded in so a single memory can hold both code decisions and a broader,
+# multi-domain knowledge base.
+VALID_TYPES = {
+    # engram core
+    "decision", "concept", "entity", "synthesis",
+    # kb-template methodology
+    "source", "source-summary", "comparison", "method", "procedure",
+    "meeting", "session-note", "project-brief", "entity-brief", "claim",
+    "open-loop", "person", "global-context", "lint-report",
+    "project-note", "planning-note", "topic-note",
+}
+# Status lifecycle: engram's machine (draft→active→stale→contradicted→archived)
+# unioned with the kb-template states (complete/superseded/tentative/rejected).
+VALID_STATUS = {
+    "draft", "active", "stale", "contradicted", "archived",
+    "complete", "superseded", "tentative", "rejected",
+}
 
 # Small IT+EN stopword list — high-frequency words that carry no retrieval
 # signal. Removing them is a clear, low-risk recall win.
